@@ -7,7 +7,7 @@ import sys
 import wget
 from pathlib import Path
 
-COMFY_SUBFOLDER = "dlbackend/comfy/ComfyUI"
+COMFY_SUBFOLDER = "dlbackend/comfy/ComfyUI" if os.name == 'nt' else "dlbackend/ComfyUI"
 
 def run(command):
     subprocess.run(command, shell=True, capture_output=True)
