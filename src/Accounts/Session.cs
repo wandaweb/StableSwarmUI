@@ -136,6 +136,8 @@ public class Session : IEquatable<Session>
         string rawImagePath = User.BuildImageOutputPath(user_input, batchIndex);
         string imagePath = rawImagePath.Replace("[number]", "1");
         string extension = (User.Settings.FileFormat.ImageFormat == "PNG" ? "png" : "jpg");
+        if (User.Settings.FileFormat.ImageFormat == "WEBP") extension = "webp";
+        if (User.Settings.FileFormat.ImageFormat == "GIF") extension = "gif";
         string fullPath = $"{User.OutputDirectory}/{imagePath}.{extension}";
         lock (User.UserLock)
         {

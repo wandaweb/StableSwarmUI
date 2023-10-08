@@ -96,7 +96,11 @@ public class Image
         /// <summary>JPEG: Lossy, (90% quality), small file.</summary>
         JPG90,
         /// <summary>JPEG: Lossy, (bad 75% quality), small file.</summary>
-        JPG75
+        JPG75,
+        /// <summary>GIF: Lossy</summary>
+        GIF,
+        /// <summary>WEBP</summary>
+        WEBP
     }
 
     /// <summary>Returns the metadata from this image, or null if none.</summary>
@@ -156,6 +160,12 @@ public class Image
                 break;
             case "JPG75":
                 img.SaveAsJpeg(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder() { Quality = 75 });
+                break;
+            case "GIF":
+                img.SaveAsGif(ms, new SixLabors.ImageSharp.Formats.Gif.GifEncoder() { });
+                break;
+            case "WEBP":
+                img.SaveAsWebp(ms, new SixLabors.ImageSharp.Formats.Webp.WebpEncoder() { });
                 break;
             // TODO: webp, etc. with appropriate quality handlers
             default:

@@ -273,6 +273,23 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         List<Image> outputs = new();
         foreach (JToken outData in output["outputs"].Values())
         {
+            if (outData is not null && outData["videos"] is not null)
+            {
+                Logs.Info("Displaying video " + outData.ToString());
+                foreach (JToken outVideo in outData["videos"])
+                {
+                    string fname = outVideo["filename"].ToString();
+                    byte[] video = await (await HttpClient.GetAsync($"{Address}/view?filename={HttpUtility.UrlEncode(fname)}", interrupt)).Content.ReadAsByteArrayAsync(interrupt);
+
+                    if (video == null || video.Length == 0)
+                    {
+                        Logs.Error($"Invalid/null/empty image data from ComfyUI server for '{fname}', under {outData.ToDenseDebugString()}");
+                        continue;
+                    }
+                    //todo: add to outputs and add a video output
+                }
+                continue;
+            }
             if (outData is null || outData["images"] is null)
             {
                 Logs.Error($"Invalid/null/empty output data from ComfyUI server: {outData.ToDenseDebugString()}");

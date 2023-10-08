@@ -1,0 +1,30 @@
+{
+  "controlnet": true,
+  "controlnet_models": [ "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11f1e_sd15_tile.pth" ],
+  "download_motion_modules": true,
+  "motion_modules": [ "https://huggingface.co/manshoety/beta_testing_models/resolve/main/mm-p_0.75.pth" ],
+  "stable_diffusion_checkpoints": [
+    {
+      "url": "https://civitai.com/api/download/models/128046",
+      "file_name": "3D_Animation_Diffusion.safetensors"
+    }
+  ],
+  "vae": [ "https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors" ],
+  "ip_adapter": true,
+  "ip_adapter_models": [
+    "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15.bin",
+    "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.bin"
+  ],
+  "clip_vision_models": [
+    "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
+  ],
+  "stable_diffusion_loras": [
+    {
+      "file_name": "Hipoly_3D_Model.safetensors",
+      "url": "https://civitai.com/api/download/models/44566"
+    }
+  ],
+  "motion_loras": [
+    "https://huggingface.co/guoyww/animatediff/resolve/main/v2_lora_RollingClockwise.ckpt"
+  ]
+}

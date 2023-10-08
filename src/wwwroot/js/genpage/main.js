@@ -193,11 +193,25 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false) 
     let curImg = getRequiredElementById('current_image');
     curImg.innerHTML = '';
     let img = document.createElement('img');
+    // Create a video element if the file is a video
+    if (src.endsWith('.mp4') || src.endsWith('.webm')) {
+        img = document.createElement('video');
+        img.setAttribute('controls', 'true');
+        let source = document.createElement('source');
+        source.setAttribute('src', src);
+        if (src.endsWith('.webm'))
+            source.setAttribute('type', 'video/webm');
+        else
+            source.setAttribute('type', 'video/mp4');
+        img.appendChild(source);
+        // Video element will not be expanded, instead clicking it plays the video
+    } else {
+        img.onclick = () => expandCurrentImage(src, metadata);
+    }
     img.className = 'current-image-img';
     img.id = 'current_image_img';
     img.src = src;
     img.dataset.batch_id = batchId;
-    img.onclick = () => expandCurrentImage(src, metadata);
     currentMetadataVal = metadata;
     let extrasWrapper = createDiv(null, 'current-image-extras-wrapper');
     let buttons = createDiv(null, 'current-image-buttons');
@@ -244,6 +258,10 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false) 
     }
     curImg.appendChild(img);
     curImg.appendChild(extrasWrapper);
+
+    if (src.endsWith('.mp4') || src.endsWith('.webm')) {
+        img.setAttribute("height", img.parentElement.getBoundingClientRect().height - 50)
+    }
 }
 
 function appendImage(container, imageSrc, batchId, textPreview, metadata = '', type = 'legacy', prepend = true) {
@@ -1013,3 +1031,10 @@ function genpageLoad() {
 }
 
 setTimeout(genpageLoad, 1);
+
+// Resize the video when the horizontal bar has been moved
+document.getElementById('t2i-mid-split-bar').addEventListener('mouseup', () => {
+    let img = document.getElementById('current_image_img');
+    if (img.className != 'img')
+        img.setAttribute('height', img.parentElement.getBoundingClientRect().height - 50)
+});

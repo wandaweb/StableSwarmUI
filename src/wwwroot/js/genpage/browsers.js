@@ -221,6 +221,22 @@ class GenPageBrowserClass {
                 container.appendChild(menuDiv);
             }
             let img = document.createElement('img');
+
+            // Create a video element if the file is a video
+            if (file.name.endsWith('.mp4') || file.name.endsWith('.webm')) {
+                img = document.createElement('video');
+                img.setAttribute('controls', 'true');
+                let src = document.createElement('source');
+                src.setAttribute('src', file.data.src);
+                if (file.name.endsWith('.webm'))
+                    src.setAttribute('type', 'video/webm');
+                else
+                    src.setAttribute('type', 'video/mp4');
+                img.appendChild(src);
+            } else {
+                img.setAttribute('src', file.data.src);
+            }
+
             img.addEventListener('click', () => {
                 this.select(file);
             });
@@ -280,6 +296,11 @@ class GenPageBrowserClass {
                 img.src = img.dataset.src;
                 delete img.dataset.src;
             }
+        }
+        // Set the video size so it fits in the container element
+        for (let img of elem.getElementsByTagName('video')) {
+            img.src = img.dataset.src;
+            img.setAttribute("height", img.parentElement.getBoundingClientRect().height - 20)
         }
     }
 
