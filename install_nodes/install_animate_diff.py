@@ -77,16 +77,10 @@ if __name__ == "__main__":
     # Get AnimateDiff
     run(f'git clone https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved')
 
-    # Get the video helper suite
-    run(f'git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite')
-
-    # Get FizzNodes for scheduled prompts
-    run(f'git clone https://github.com/FizzleDorf/ComfyUI_FizzNodes')
-
     # Get ControlNet
-    run(f'git clone https://github.com/Fannovel16/comfyui_controlnet_aux')
-    run(f'git clone https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet')
-    
+    if (conf['controlnet'] == True):
+        run(f'git clone https://github.com/Fannovel16/comfyui_controlnet_aux')
+
     # Download motion modules
     if (conf['download_motion_modules'] == True):
         foldername = f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes/ComfyUI-AnimateDiff-Evolved/models/' 
