@@ -168,4 +168,6 @@ if __name__ == "__main__":
     except (FileExistsError):
         print(f"File {stableswarm_path}/Output/local/AnimateDiff already exists")
 
+    print("Installation complete.")
+
 

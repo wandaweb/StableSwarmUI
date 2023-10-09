@@ -197,6 +197,8 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false) 
     if (src.endsWith('.mp4') || src.endsWith('.webm')) {
         img = document.createElement('video');
         img.setAttribute('controls', 'true');
+        img.setAttribute('loop', 'true');
+        img.setAttribute('autoplay', 'true');
         let source = document.createElement('source');
         source.setAttribute('src', src);
         if (src.endsWith('.webm'))

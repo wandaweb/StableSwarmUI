@@ -225,7 +225,9 @@ class GenPageBrowserClass {
             // Create a video element if the file is a video
             if (file.name.endsWith('.mp4') || file.name.endsWith('.webm')) {
                 img = document.createElement('video');
-                img.setAttribute('controls', 'true');
+                //img.setAttribute('controls', 'true');
+                img.setAttribute('loop', 'true');
+                img.setAttribute('autoplay', 'true');
                 let src = document.createElement('source');
                 src.setAttribute('src', file.data.src);
                 if (file.name.endsWith('.webm'))
