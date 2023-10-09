@@ -1,5 +1,4 @@
 {
-  "controlnet": true,
   "controlnet_models": [ "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11f1e_sd15_tile.pth" ],
   "download_motion_modules": true,
   "motion_modules": [ "https://huggingface.co/manshoety/beta_testing_models/resolve/main/mm-p_0.75.pth" ],
