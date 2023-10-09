@@ -18,6 +18,15 @@ def is_admin():
     except:
         return False
 
+def already_downloaded(url):
+    # Check if the file downloaded from the given url exists in the current folder
+    filename = url.split('/')[-1]
+    if os.path.exists(filename):
+        print('Already downloaded: ' + url)
+        return True
+    else:
+        return False
+
 def navigate_to_stableswarm(arguments):
     # Navigates to the StableSwarmUI directory and returns its path
 
@@ -66,7 +75,7 @@ if __name__ == "__main__":
     os.chdir(f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes')
     
     # Get AnimateDiff
-    run(f'git clone https://github.com/ArtVentureX/comfyui-animatediff')
+    run(f'git clone https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved')
 
     # Get ControlNet
     if (conf['controlnet'] == True):
@@ -74,13 +83,14 @@ if __name__ == "__main__":
 
     # Download motion modules
     if (conf['download_motion_modules'] == True):
-        foldername = f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes/comfyui-animatediff/models/'
+        foldername = f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes/ComfyUI-AnimateDiff-Evolved/models/' 
         os.chdir(foldername)
         print(foldername)
         for module_url in conf['motion_modules']:
-            print(f'Downloading {module_url}')
-            wget.download(module_url, bar=wget.bar_adaptive)
-            print('\n')
+            if not already_downloaded(module_url):
+                print(f'Downloading {module_url}')
+                wget.download(module_url, bar=wget.bar_adaptive)
+                print('\n')
 
     # Download Stable Diffusion models
     os.chdir(f'{stableswarm_path}/Models/Stable-Diffusion')
@@ -89,39 +99,45 @@ if __name__ == "__main__":
     os.chdir(foldername)
     print(foldername)
     for model in conf['stable_diffusion_checkpoints']:
-        print(f'Downloading {model["file_name"]} from {model["url"]}')
-        r = requests.get(model["url"], allow_redirects=True)  # to get content after redirection
-        pdf_url = r.url # 'https://media.readthedocs.org/pdf/django/latest/django.pdf'
-        with open(model["file_name"], 'wb') as f:
-            f.write(r.content)
-        print('')
+        if not os.path.exists(model["file_name"]):
+            print(f'Downloading {model["file_name"]} from {model["url"]}')
+            r = requests.get(model["url"], allow_redirects=True)  
+            with open(model["file_name"], 'wb') as f:
+                f.write(r.content)
+            print('')
+        else:
+            print(f'File {model["file_name"]} exists.')
 
     # Download LoRAs
     foldername = f'{stableswarm_path}/Models/Lora'
     os.chdir(foldername)
     print(foldername)
     for model in conf['stable_diffusion_loras']:
-        print(f'Downloading {model["file_name"]} from {model["url"]}')
-        r = requests.get(model["url"], allow_redirects=True)  # to get content after redirection
-        pdf_url = r.url # 'https://media.readthedocs.org/pdf/django/latest/django.pdf'
-        with open(model["file_name"], 'wb') as f:
-            f.write(r.content)
-        print('\n')
+        if not os.path.exists(model["file_name"]):
+            print(f'Downloading {model["file_name"]} from {model["url"]}')
+            r = requests.get(model["url"], allow_redirects=True)  
+            with open(model["file_name"], 'wb') as f:
+                f.write(r.content)
+            print('\n')
+        else:
+            print(f'File {model["file_name"]} exists.')
 
     # Download VAE
     foldername = f'{stableswarm_path}/Models/VAE'
     os.chdir(foldername)
     print(foldername)
     for model in conf['vae']:
-        print(f'Downloading {model}')
-        wget.download(model, bar=wget.bar_adaptive)
-        print('\n')
+        if not already_downloaded(model):
+            print(f'Downloading {model}')
+            wget.download(model, bar=wget.bar_adaptive)
+            print('\n')
 
     # Download Motion LoRAs
-    foldername = f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes/comfyui-animatediff/loras'
+    foldername = f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes/ComfyUI-AnimateDiff-Evolved/loras'
     os.chdir(foldername)
     print(foldername)
     for model in conf['motion_loras']:
+        if not already_downloaded(model):
             print(f'Downloading {model}')
             wget.download(model, bar=wget.bar_adaptive)
             print('\n')
@@ -141,18 +157,20 @@ if __name__ == "__main__":
         os.chdir(foldername)
         print(foldername)
         for model in conf['ip_adapter_models']:
-            print(f'Downloading {model}')
-            wget.download(model, bar=wget.bar_adaptive)
-            print('\n')
+            if not already_downloaded(model):
+                print(f'Downloading {model}')
+                wget.download(model, bar=wget.bar_adaptive)
+                print('\n')
         
         # Download the clip vision model 
         foldername = f'{stableswarm_path}/Models/clip_vision'
         os.chdir(foldername)
         print(foldername)
         for model in conf['ip_adapter_models']:
-            print(f'Downloading {model}')
-            wget.download(model, bar=wget.bar_thermometer)
-            print('\n')
+            if not already_downloaded(model):
+                print(f'Downloading {model}')
+                wget.download(model, bar=wget.bar_thermometer)
+                print('\n')
         
         # Link IP Adapter output models to a Models folder so they get recognized by StableSwarm
         try:
