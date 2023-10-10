@@ -205,7 +205,7 @@ public class T2IParamTypes
         return update;
     }
 
-    public static T2IRegisteredParam<string> Prompt, NegativePrompt, AspectRatio, BackendType, RefinerMethod;
+    public static T2IRegisteredParam<string> Prompt, NegativePrompt, AspectRatio, BackendType, RefinerMethod, FreeUApplyTo;
     public static T2IRegisteredParam<int> Images, Steps, Width, Height, BatchSize, ExactBackendID;
     public static T2IRegisteredParam<long> Seed, VariationSeed;
     public static T2IRegisteredParam<double> CFGScale, VariationSeedStrength, InitImageCreativity, RefinerControl, RefinerUpscale, ControlNetStrength, ReVisionStrength, AltResolutionHeightMult,
@@ -214,9 +214,10 @@ public class T2IParamTypes
     public static T2IRegisteredParam<T2IModel> Model, RefinerModel, VAE, ControlNetModel, ReVisionModel, RegionalObjectInpaintingModel;
     public static T2IRegisteredParam<List<string>> Loras, LoraWeights;
     public static T2IRegisteredParam<List<Image>> PromptImages;
-    public static T2IRegisteredParam<bool> DoNotSave, ControlNetPreviewOnly;
+    public static T2IRegisteredParam<bool> DoNotSave, ControlNetPreviewOnly, RevisionZeroPrompt;
 
-    public static T2IParamGroup GroupCore, GroupVariation, GroupResolution, GroupInitImage, GroupRefiners, GroupControlNet, GroupAdvancedModelAddons, GroupSwarmInternal, GroupFreeU, GroupRegionalPrompting, GroupAdvancedSampling;
+    public static T2IParamGroup GroupRevision, GroupCore, GroupVariation, GroupResolution, GroupInitImage, GroupRefiners, GroupControlNet,
+        GroupAdvancedModelAddons, GroupSwarmInternal, GroupFreeU, GroupRegionalPrompting, GroupAdvancedSampling;
 
     /// <summary>(For extensions) list of functions that provide fake types for given type names.</summary>
     public static List<Func<string, T2IParamInput, T2IParamType>> FakeTypeProviders = new();
@@ -230,15 +231,20 @@ public class T2IParamTypes
         PromptImages = Register<List<Image>>(new("Prompt Images", "Images to include with the prompt, for eg ReVision or UnCLIP.",
             "", IgnoreIf: "", OrderPriority: -95, Toggleable: true, VisibleNormally: false, IsAdvanced: true, ImageShouldResize: false, HideFromMetadata: true // Has special internal handling
             ));
-        ReVisionStrength = Register<double>(new("ReVision Strength", "How strong to apply ReVision image inputs.",
-            "1", OrderPriority: -94, Min: 0, Max: 10, Step: 0.1, Toggleable: true, ViewType: ParamViewType.SLIDER
-            ));
         GroupAdvancedModelAddons = new("Advanced Model Addons", Open: false, IsAdvanced: true);
-        ReVisionModel = Register<T2IModel>(new("ReVision Model", "The CLIP Vision model to use for ReVision inputs.",
-            "", Subtype: "ClipVision", IsAdvanced: true, Toggleable: true, Group: GroupAdvancedModelAddons
-            ));
         NegativePrompt = Register<string>(new("Negative Prompt", "Like the input prompt text, but describe what NOT to generate.\nTell the AI things you don't want to see.",
             "", IgnoreIf: "", Clean: ApplyStringEdit, Examples: new[] { "ugly, bad, gross", "lowres, low quality" }, OrderPriority: -90, ViewType: ParamViewType.PROMPT
+            ));
+        GroupRevision = new("ReVision", Open: false, Toggles: true, OrderPriority: -70);
+        ReVisionStrength = Register<double>(new("ReVision Strength", "How strong to apply ReVision image inputs.",
+            "1", OrderPriority: -70, Min: 0, Max: 10, Step: 0.1, ViewType: ParamViewType.SLIDER, Group: GroupRevision
+            ));
+        RevisionZeroPrompt = Register<bool>(new("ReVision Zero Prompt", "Zeroes the prompt and negative prompt for ReVision inputs.\nApplies only to the base, the refiner will still get prompts.\nIf you want zeros on both, just delete your prompt text."
+            + "\nIf not checked, empty prompts will be zeroed regardless.",
+            "false", IgnoreIf: "false", Group: GroupRevision
+            ));
+        ReVisionModel = Register<T2IModel>(new("ReVision Model", "The CLIP Vision model to use for ReVision inputs.",
+            "", Subtype: "ClipVision", IsAdvanced: true, Toggleable: true, Group: GroupAdvancedModelAddons
             ));
         GroupCore = new("Core Parameters", Toggles: false, Open: true, OrderPriority: -50);
         Images = Register<int>(new("Images", "How many images to generate at once.",
@@ -347,6 +353,9 @@ public class T2IParamTypes
             "0", Toggleable: true, IsAdvanced: true, ViewType: ParamViewType.BIG, Permission: "param_backend_id", Group: GroupSwarmInternal, AlwaysRetain: true
             ));
         GroupFreeU = new("FreeU", Open: false, OrderPriority: 10, IsAdvanced: true, Toggles: true, Description: "Implements 'FreeU: Free Lunch in Diffusion U-Net' https://arxiv.org/abs/2309.11497");
+        FreeUApplyTo = Register<string>(new("[FreeU] Apply To", "Which models to apply FreeU to, as base, refiner, or both. Irrelevant when not using refiner.",
+            "Both", GetValues: (_) => new() { "Both", "Base", "Refiner" }, IsAdvanced: true, Group: GroupFreeU, FeatureFlag: "freeu"
+            ));
         FreeUBlock1 = Register<double>(new("[FreeU] Block One", "Block1 multiplier value for FreeU.\nPaper recommends 1.1.",
             "1.1", Min: 0, Max: 10, Step: 0.05, IsAdvanced: true, Group: GroupFreeU, FeatureFlag: "freeu"
             ));
