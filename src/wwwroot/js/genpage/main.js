@@ -264,6 +264,17 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false) 
     if (src.endsWith('.mp4') || src.endsWith('.webm')) {
         img.setAttribute("height", img.parentElement.getBoundingClientRect().height - 50)
     }
+    imageButtons = document.getElementsByClassName('current-image-buttons')[0];
+    // hide image buttons which are not available for videos
+    if (src.endsWith('.mp4') || src.endsWith('.webm') || src.endsWith('.gif')) {
+        if (imageButtons) {
+            imageButtons.style.display = 'none'
+        }
+    } else {
+        if (imageButtons) {
+            imageButtons.style.display = 'block'
+        }
+    }
 }
 
 function appendImage(container, imageSrc, batchId, textPreview, metadata = '', type = 'legacy', prepend = true) {
