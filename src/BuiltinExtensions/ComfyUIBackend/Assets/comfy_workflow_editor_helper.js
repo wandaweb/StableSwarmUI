@@ -10,6 +10,8 @@ let comfyObjectData = {};
 
 let comfyHasTriedToLoad = false;
 
+let comfyAltSaveNodes = ['ADE_AnimateDiffCombine', 'VHS_VideoCombine'];
+
 /**
  * Tries to load the ComfyUI workflow frame.
  */
@@ -131,6 +133,7 @@ function comfyBuildParams(callback) {
         let nodeStaticUnique = [];
         let nodeLabelPaths = {};
         let nodeIsRandomize = {};
+        let claimedByPrimitives = [];
         for (let node of workflow.nodes) {
             if (node.title) {
                 labelAlterations[`${node.id}`] = node.title;
@@ -140,6 +143,13 @@ function comfyBuildParams(callback) {
                 nodeIsRandomize[`${node.id}`] = true;
             }
             if (node.type == 'PrimitiveNode' && node.title) {
+                let colon = node.title.indexOf(':');
+                if (colon > 0) {
+                    let before = node.title.substring(0, colon).trim().toLowerCase();
+                    if (before == "swarmui") {
+                        claimedByPrimitives.push(cleanParamName(node.title.substring(colon + 1)));
+                    }
+                }
                 let cleanTitle = cleanParamName(node.title);
                 let cleaned = inputPrefix + cleanTitle;
                 let id = cleaned;
@@ -186,10 +196,16 @@ function comfyBuildParams(callback) {
             else if (node.class_type == 'SwarmSaveImageWS') {
                 hasSaves = true;
             }
+            else if (comfyAltSaveNodes.includes(node.class_type)) {
+                hasSaves = true;
+            }
             if (node.inputs) {
                 for (let inputId of Object.keys(node.inputs)) {
                     let val = node.inputs[inputId];
-                    if (typeof val == 'object' && val.length == 2) {
+                    if (val == null) {
+                        console.log(`Null input ${inputId} on node ${nodeId} (${JSON.stringify(node)})`);
+                    }
+                    else if (typeof val == 'object' && val.length == 2) {
                         if (inputId == 'negative' && val[1] == 0) {
                             labelAlterations[val[0]] = 'Negative Prompt';
                         }
@@ -308,7 +324,7 @@ function comfyBuildParams(callback) {
                             min = paramDataRaw[1].min;
                             max = paramDataRaw[1].max;
                             step = 1;
-                            if (inputId == 'batch_size' && getUserSetting('resetbatchsizetoone')) {
+                            if (inputId == 'batch_size' && getUserSetting('resetbatchsizetoone') && !claimedByPrimitives.includes('batchsize')) {
                                 val = 1;
                             }
                         }
@@ -339,7 +355,7 @@ function comfyBuildParams(callback) {
                         return inputIdDirect;
                     }
                     else if (node.class_type == 'CheckpointLoaderSimple' && inputId == 'ckpt_name') {
-                        if (!('model' in defaultParamValue)) {
+                        if (!('model' in defaultParamValue) && !claimedByPrimitives.includes('model')) {
                             defaultParamValue['model'] = node.inputs[inputId];
                             node.inputs[inputId] = "${model:error_missing_model}";
                             return inputIdDirect;
@@ -385,6 +401,9 @@ function comfyBuildParams(callback) {
                 return inputIdDirect;
             }
             function claimOnce(classType, paramName, fieldName, numeric) {
+                if (claimedByPrimitives.includes(cleanParamName(paramName))) {
+                    return false;
+                }
                 if (node.class_type != classType) {
                     return false;
                 }
@@ -442,6 +461,8 @@ function comfyBuildParams(callback) {
             claimOnce('KSamplerAdvanced', 'comfyui_scheduler', 'scheduler', false);
             claimOnce('KSamplerAdvanced', 'cfg_scale', 'cfg', true);
             claimOnce('LoadImage', 'initimage', 'image', false);
+            claimOnce('SwarmLoraLoader', 'loras', 'lora_names', false);
+            claimOnce('SwarmLoraLoader', 'loraweights', 'lora_weights', false);
             if (node.class_type == 'CLIPTextEncode' && groupLabel.startsWith("Positive Prompt") && !defaultParamsRetain.includes('prompt') && typeof node.inputs.text == 'string') {
                 defaultParamsRetain.push('prompt');
                 defaultParamValue['prompt'] = node.inputs.text;
@@ -524,7 +545,7 @@ function setComfyWorkflowInput(params, retained, paramVal, applyValues) {
             }
         }
     }
-    let isSortTop = p => p.id == 'prompt' || p.id == 'negativeprompt';
+    let isSortTop = p => p.id == 'prompt' || p.id == 'negativeprompt' || p.id == 'comfyworkflowraw';
     let prompt = Object.values(actualParams).filter(isSortTop);
     let otherParams = Object.values(actualParams).filter(p => !isSortTop(p));
     let prims = Object.values(params).filter(p => p.group == null);

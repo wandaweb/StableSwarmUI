@@ -6,6 +6,7 @@ using SixLabors.ImageSharp.Metadata.Profiles.Exif;
 using ISImage = SixLabors.ImageSharp.Image;
 using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp.Processing;
+using FreneticUtilities.FreneticExtensions;
 
 /// <summary>Helper to represent an image file cleanly and quickly.</summary>
 public class Image
@@ -13,14 +14,54 @@ public class Image
     /// <summary>The raw binary data.</summary>
     public byte[] ImageData;
 
+    public enum ImageType
+    {
+        IMAGE = 0,
+        /// <summary>ie animated gif</summary>
+        ANIMATION = 1,
+        VIDEO = 2
+    }
+
+    /// <summary>The type of image data this image holds.</summary>
+    public ImageType Type;
+
+    /// <summary>File extension for this image.</summary>
+    public string Extension;
+
+    /// <summary>Creates an image object from a web image data URL string.</summary>
+    public static Image FromDataString(string data)
+    {
+        if (data.StartsWith("data:video/"))
+        {
+            string ext = data.After("data:video/").Before(";base64,");
+            return new Image(data.ToString().After(";base64,"), ImageType.VIDEO, ext);
+        }
+        if (data.StartsWith("data:image/gif;"))
+        {
+            return new Image(data.ToString().After(";base64,"), ImageType.ANIMATION, "gif");
+        }
+        if (data.StartsWith("data:image/"))
+        {
+            string ext = data.After("data:image/").Before(";base64,");
+            if (ext == "jpeg")
+            {
+                ext = "jpg";
+            }
+            return new Image(data.ToString().After(";base64,"), ImageType.IMAGE, ext);
+        }
+        return new Image(data.ToString().After(";base64,"), ImageType.IMAGE, "png");
+    }
+
     /// <summary>Construct an image from Base64 text.</summary>
-    public Image(string base64) : this(Convert.FromBase64String(base64))
+    public Image(string base64, ImageType type, string extension) : this(Convert.FromBase64String(base64), type, extension)
     {
     }
 
     /// <summary>Construct an image from raw binary data.</summary>
-    public Image(byte[] data)
+    public Image(byte[] data, ImageType type, string extension)
     {
+        Extension = extension;
+        Type = type;
         if (data is null)
         {
             throw new ArgumentNullException(nameof(data));
@@ -33,7 +74,7 @@ public class Image
     }
 
     /// <summary>Construct an image from an ISImage.</summary>
-    public Image(ISImage img) : this(ISImgToPngBytes(img))
+    public Image(ISImage img) : this(ISImgToPngBytes(img), ImageType.IMAGE, "png")
     {
     }
 
@@ -59,31 +100,56 @@ public class Image
         return stream.ToArray();
     }
 
+    public string AsDataString()
+    {
+        if (Type == ImageType.ANIMATION)
+        {
+            return "data:image/gif;base64," + AsBase64;
+        }
+        else if (Type == ImageType.VIDEO)
+        {
+            return $"data:video/{Extension};base64," + AsBase64;
+        }
+        return $"data:image/{(Extension == "jpg" ? "jpeg" : Extension)};base64," + AsBase64;
+    }
+
     /// <summary>Returns a metadata-format of the image.</summary>
     public string ToMetadataFormat()
     {
+        if (Type != ImageType.IMAGE)
+        {
+            return AsDataString();
+        }
         ISImage img = ToIS;
         float factor = 256f / Math.Min(img.Width, img.Height);
         img.Mutate(i => i.Resize((int)(img.Width * factor), (int)(img.Height * factor)));
-        return "data:image/jpeg;base64," + new Image(ISImgToJpgBytes(img)).AsBase64;
+        return "data:image/jpeg;base64," + new Image(ISImgToJpgBytes(img), Type, "jpg").AsBase64;
     }
 
     /// <summary>Resizes the given image directly and returns a png formatted copy of it.</summary>
     public Image Resize(int width, int height)
     {
+        if (Type != ImageType.IMAGE)
+        {
+            return this;
+        }
         ISImage img = ToIS;
         if (ToIS.Width == width && ToIS.Height == height)
         {
             return this;
         }
         img.Mutate(i => i.Resize(width, height));
-        return new(ISImgToPngBytes(img));
+        return new(ISImgToPngBytes(img), Type, Extension);
     }
 
     /// <summary>Returns a copy of this image that's definitely in '.png' format.</summary>
     public Image ForceToPng()
     {
-        return new(ISImgToPngBytes(ToIS));
+        if (Type != ImageType.IMAGE)
+        {
+            return this;
+        }
+        return new(ISImgToPngBytes(ToIS), Type, "png");
     }
 
     /// <summary>Image formats that are possible to save as.</summary>
@@ -96,11 +162,7 @@ public class Image
         /// <summary>JPEG: Lossy, (90% quality), small file.</summary>
         JPG90,
         /// <summary>JPEG: Lossy, (bad 75% quality), small file.</summary>
-        JPG75,
-        /// <summary>GIF: Lossy</summary>
-        GIF,
-        /// <summary>WEBP</summary>
-        WEBP
+        JPG75
     }
 
     /// <summary>Returns the metadata from this image, or null if none.</summary>
@@ -130,6 +192,10 @@ public class Image
     /// <summary>Converts an image to the specified format, and the specific metadata text.</summary>
     public Image ConvertTo(string format, string metadata = null, int dpi = 0)
     {
+        if (Type != ImageType.IMAGE)
+        {
+            return this;
+        }
         using MemoryStream ms = new();
         ISImage img = ToIS;
         img.Metadata.XmpProfile = null;
@@ -147,10 +213,12 @@ public class Image
             img.Metadata.VerticalResolution = dpi;
         }
         img.Metadata.ExifProfile = prof;
+        string ext = "jpg";
         switch (format)
         {
             case "PNG":
                 img.SaveAsPng(ms);
+                ext = "png";
                 break;
             case "JPG":
                 img.SaveAsJpeg(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder() { Quality = 100 });
@@ -171,6 +239,6 @@ public class Image
             default:
                 throw new InvalidDataException($"User setting for image format is '{format}', which is invalid");
         }
-        return new(ms.ToArray());
+        return new(ms.ToArray(), Type, ext);
     }
 }

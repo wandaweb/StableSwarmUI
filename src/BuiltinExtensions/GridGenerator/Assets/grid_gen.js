@@ -116,6 +116,24 @@ class GridGenClass {
                     if (possible.length > 0 && possible.filter(e => e.toLowerCase() == searchPre).length == 0) {
                         this.popover = createDiv('popover_grid_search', 'sui-popover sui_popover_model sui_popover_scrollable');
                         let isFirst = true;
+                        if (possible.length > 1) {
+                            let button = createDiv(null, 'sui_popover_model_button_selected sui_popover_model_button_add_all sui_popover_model_button');
+                            isFirst = false;
+                            button.innerText = "(Add All)";
+                            let combined = possible.join(', ');
+                            if (combined.includes('||') || separator == '||') {
+                                combined = possible.join(' || ');
+                            }
+                            button.addEventListener('click', () => {
+                                hidePopover('grid_search');
+                                this.popover.remove();
+                                this.popover = null;
+                                inputBox.innerText = areaPre + combined + areaPost;
+                                setSelectionRange(inputBox, areaPre.length + combined.length, areaPre.length + combined.length);
+                                updateInput();
+                            });
+                            this.popover.appendChild(button);
+                        }
                         for (let val of possible) {
                             let button = createDiv(null, (isFirst ? 'sui_popover_model_button_selected ' : '') + 'sui_popover_model_button');
                             isFirst = false;
@@ -308,13 +326,13 @@ class GridGenClass {
         this.settingsDiv.innerHTML =
             '<br><div id="grid-gen-info-box">...</div>'
             + makeTextInput(null, 'grid-gen-output-folder-name', 'Output Folder Name', 'Name of the folder to save this grid under in your Image History.', '', false, 'Output folder name...', false, true)
-            + '<br>'
+            + '<br><div class="grid-gen-checkboxes">'
             + makeCheckboxInput(null, 'grid-gen-opt-do-overwrite', 'Overwrite Existing Files', 'If checked, will overwrite any already-generated images.', false, false, true)
             + makeCheckboxInput(null, 'grid-gen-opt-fast-skip', 'Fast Skip', 'If checked, uses faster skipping algorithm (prevents validation of skipped axes).', false, false, true)
             + makeCheckboxInput(null, 'grid-gen-opt-generate-page', 'Generate Page', 'If unchecked, will prevent regenerating the page for the grid.', true, false, true)
             + makeCheckboxInput(null, 'grid-gen-opt-publish-metadata', 'Publish Generation Metadata', 'If unchecked, will hide the image generation metadata.', true, false, true)
             + makeCheckboxInput(null, 'grid-gen-opt-dry-run', 'Dry Run', 'If checked, will not actually generate any images - useful to validate your grid.', false, false, true)
-            ;
+            + '</div>';
         this.mainDiv.appendChild(this.settingsDiv);
         this.mainDiv.appendChild(this.axisDiv);
         let outInfoBox = document.getElementById('grid-gen-info-box');

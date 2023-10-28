@@ -1,6 +1,6 @@
 # StableSwarmUI
 
-**StableSwarmUI 0.5.7 Alpha**.
+**StableSwarmUI 0.5.8 Alpha**.
 
 A Modular Stable Diffusion Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility.
 
@@ -67,6 +67,17 @@ Key feature targets not yet implemented:
 The installation starts now and downloads the Stable Diffusion models from the internet. Depending on your internet connection, this may take several minutes. Wait for your web browser to open the StableSwarmUI window.
 
 > **Important**: During the StableSwarmUI installation, you are prompted for the type of backend you want to use. For Mac computers with M1 or M2, you can safely choose the ComfyUI backend and choose the Stable Diffusion XL Base and Refiner models in the Download Models screen.
+
+# Running with Docker
+
+- To forward an Nvidia GPU, you must have the Nvidia Container Toolkit installed: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+- Open a shell terminal and `cd` to a directory you want to install into
+- Run shell commands:
+    - `git clone https://github.com/Stability-AI/StableSwarmUI`
+    - cd `StableSwarmUI`
+    - `./launch-docker.sh`
+    - Open your browser to `localhost:7801`
+- Note that it will forward the `Models` and `Output` directory, and will mount `Data` and `dlbackend` as independent persistent volumes.
 
 # Documentation
 

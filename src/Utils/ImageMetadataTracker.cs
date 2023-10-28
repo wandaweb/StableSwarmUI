@@ -1,6 +1,7 @@
 ﻿using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using LiteDB;
+using StableSwarmUI.Core;
 using System.IO;
 
 namespace StableSwarmUI.Utils;
@@ -102,7 +103,7 @@ public static class ImageMetadataTracker
             {
                 return null;
             }
-            string fileData = new Image(data).GetMetadata();
+            string fileData = new Image(data, Image.ImageType.IMAGE, file.AfterLast('.')).GetMetadata();
             lock (metadata.Lock)
             {
                 ImageMetadataEntry entry = new() { FileName = filename, Metadata = fileData, LastVerified = timeNow, FileTime = fileTime };
@@ -129,5 +130,39 @@ public static class ImageMetadataTracker
                 db.Database.Dispose();
             }
         }
+    }
+
+    public static void MassRemoveMetadata()
+    {
+        KeyValuePair<string, ImageDatabase>[] dbs = Databases.ToArray();
+        foreach ((string name, ImageDatabase db) in dbs)
+        {
+            lock (db.Lock)
+            {
+                db.Database.Dispose();
+                try
+                {
+                    File.Delete($"{name}/image_metadata.ldb");
+                }
+                catch (IOException) { }
+                Databases.TryRemove(name, out _);
+            }
+        }
+        static void ClearFolder(string folder)
+        {
+            if (File.Exists($"{folder}/image_metadata.ldb"))
+            {
+                try
+                {
+                    File.Delete($"{folder}/image_metadata.ldb");
+                }
+                catch (IOException) { }
+            }
+            foreach (string subFolder in Directory.GetDirectories(folder))
+            {
+                ClearFolder(subFolder);
+            }
+        }
+        ClearFolder(Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath));
     }
 }

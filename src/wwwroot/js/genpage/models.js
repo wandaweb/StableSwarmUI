@@ -25,7 +25,9 @@ function editModel(model, browser) {
         newImg.id = 'edit_model_image_img';
         newImg.style.maxWidth = '100%';
         imageInput.appendChild(newImg);
-        enableImage.checked = true;
+        if (!model.preview_image || model.preview_image == 'imgs/model_placeholder.jpg') {
+            enableImage.checked = true;
+        }
         enableImage.disabled = false;
     }
     getRequiredElementById('edit_model_name').value = model.title || model.name;
@@ -150,6 +152,7 @@ class ModelBrowserWrapper {
                         'description': 'Use the VAE built-in to your Stable Diffusion model',
                         'preview_image': '/imgs/none.jpg',
                         'is_safetensors': true,
+                        'local': true,
                         standard_width: 0,
                         standard_height: 0
                     }
@@ -163,7 +166,7 @@ class ModelBrowserWrapper {
     describeModel(model) {
         let description = '';
         let buttons = [];
-        if (this.subType == 'Stable-Diffusion') {
+        if (this.subType == 'Stable-Diffusion' && model.data.local) {
             let buttonLoad = () => {
                 directSetModel(model.data);
                 makeWSRequestT2I('SelectModelWS', {'model': model.data.name}, data => {
@@ -186,8 +189,13 @@ class ModelBrowserWrapper {
             if (this.subType == 'LoRA' || this.subType == 'Stable-Diffusion') {
                 interject += `${getLine("Resolution", `${model.data.standard_width}x${model.data.standard_height}`)}`;
             }
+            if (!model.data.local) {
+                interject += `<b>(This model is only available on some backends.)</b><br>`;
+            }
             description = `<span class="model_filename">${escapeHtml(name)}</span><br>${getLine("Title", model.data.title)}${getOptLine("Author", model.data.author)}${getLine("Type", model.data.class)}${interject}${getOptLine('Trigger Phrase', model.data.trigger_phrase)}${getOptLine('Usage Hint', model.data.usage_hint)}${getLine("Description", model.data.description)}`;
-            buttons.push({ label: 'Edit Metadata', onclick: () => editModel(model.data, this) });
+            if (model.data.local) {
+                buttons.push({ label: 'Edit Metadata', onclick: () => editModel(model.data, this) });
+            }
         }
         else {
             let ext = model.data.name.substring(model.data.name.lastIndexOf('.') + 1);
@@ -211,10 +219,21 @@ class ModelBrowserWrapper {
         else if (this.subType == 'LoRA') {
             isSelected = [...selectorElem.selectedOptions].map(option => option.value).filter(value => value == model.data.name).length > 0;
         }
+        else if (this.subType == 'Embedding') {
+            let promptBox = getRequiredElementById('alt_prompt_textbox');
+            isSelected = promptBox.value.includes(`<embed:${model.data.name}>`);
+            let negativePrompt = document.getElementById('input_negativeprompt');
+            if (negativePrompt) {
+                isSelected = isSelected || negativePrompt.value.includes(`<embed:${model.data.name}>`);
+            }
+        }
         else {
             isSelected = selectorElem.value == model.data.name;
         }
         let className = isSelected ? 'model-selected' : (model.data.loaded ? 'model-loaded' : (!isCorrect ? 'model-unavailable' : ''));
+        if (!model.data.local) {
+            className += ' model-remote';
+        }
         let searchable = `${model.data.name}, ${description}, ${model.data.license}, ${model.data.architecture||'no-arch'}, ${model.data.usage_hint}, ${model.data.trigger_phrase}, ${model.data.merged_from}, ${model.data.tags}`;
         return { name, description, buttons, 'image': model.data.preview_image, className, searchable };
     }
@@ -228,8 +247,42 @@ class ModelBrowserWrapper {
 let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
 let sdVAEBrowser = new ModelBrowserWrapper('VAE', 'vae_list', 'sdvaebrowser', (vae) => { directSetVae(vae.data); });
 let sdLoraBrowser = new ModelBrowserWrapper('LoRA', 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(lora.data.name); });
-let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', 'embedding_list', 'sdembedbrowser', (embed) => {});
+let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', 'embedding_list', 'sdembedbrowser', (embed) => { selectEmbedding(embed.data); });
 let sdControlnetBrowser = new ModelBrowserWrapper('ControlNet', 'controlnet_list', 'sdcontrolnetbrowser', (controlnet) => { setControlNet(controlnet.data); });
+
+let allModelBrowsers = [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser];
+
+function selectEmbedding(model) {
+    let promptBox = getRequiredElementById('alt_prompt_textbox');
+    let chunk = `<embed:${model.name}>`;
+    if (promptBox.value.endsWith(chunk)) {
+        promptBox.value = promptBox.value.substring(0, promptBox.value.length - chunk.length).trim();
+    }
+    else {
+        promptBox.value += ` ${chunk}`;
+    }
+    triggerChangeFor(promptBox);
+    sdEmbedBrowser.browser.rerender();
+}
+
+let lastPromptForEmbedMonitor = {};
+
+function monitorPromptChangeForEmbed(promptText, type) {
+    let last = lastPromptForEmbedMonitor[type];
+    if (!last) {
+        last = "";
+    }
+    if (promptText == last) {
+        return;
+    }
+    lastPromptForEmbedMonitor[type] = promptText;
+    let countNew = promptText.split(`<embed:`).length - 1;
+    let countOld = last.split(`<embed:`).length - 1;
+    if (countNew == countOld) {
+        return;
+    }
+    sdEmbedBrowser.browser.rerender();
+}
 
 function setControlNet(model) {
     let input = document.getElementById('input_controlnetmodel');
@@ -244,7 +297,7 @@ function setControlNet(model) {
 }
 
 function initialModelListLoad() {
-    for (let browser of [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser]) {
+    for (let browser of allModelBrowsers) {
         browser.browser.navigate('');
     }
 }
@@ -379,7 +432,7 @@ function directSetModel(model) {
     if (aspect) {
         aspect.dispatchEvent(new Event('change'));
     }
-    for (let browser of [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser]) {
+    for (let browser of allModelBrowsers) {
         browser.browser.update();
     }
 }

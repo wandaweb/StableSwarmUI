@@ -252,11 +252,29 @@ public partial class GridGenCore
             GridCallInitHook?.Invoke(this);
         }
 
+        public bool CanSkip()
+        {
+            if (Skip)
+            {
+                return true;
+            }
+            if (Grid.Runner.DoOverwrite)
+            {
+                return false;
+            }
+            if (File.Exists($"{Grid.Runner.BasePath}/{BaseFilepath}.{Grid.Format}")
+                || File.Exists($"{Grid.Runner.BasePath}/{BaseFilepath}.metadata.js"))
+            {
+                return true;
+            }
+            return false;
+        }
+
         public void BuildBasePaths()
         {
             BaseFilepath = string.Join("/", Values.Select(v => T2IParamTypes.CleanNameGeneric(v.Key)).Reverse());
             Data = string.Join(", ", Values.Select(v => $"{v.Axis.Title}={v.Title}"));
-            Skip = Skip || (!Grid.Runner.DoOverwrite && File.Exists($"{Grid.Runner.BasePath}/{BaseFilepath}.{Grid.Format}"));
+            Skip = CanSkip();
         }
 
         public void FlattenParams(Grid grid)
@@ -464,6 +482,7 @@ public partial class GridGenCore
                     JObject jVal = new()
                     {
                         ["key"] = val.Key.ToLowerFast(),
+                        ["path"] = val.Key.ToLowerFast(),
                         ["title"] = val.Title,
                         ["description"] = val.Description ?? "",
                         ["show"] = val.Show
@@ -579,7 +598,7 @@ public partial class GridGenCore
                 File.WriteAllText(path + "/last.js", "window.lastUpdated = []");
             }
             File.WriteAllText(path + "/data.js", "rawData = " + json);
-            foreach (string f in EXTRA_ASSETS.Union(new string[] { "bootstrap.min.css", "bootstrap.bundle.min.js", "proc.js", "jquery.min.js", "jsgif.js", "styles.css", "placeholder.png" }))
+            foreach (string f in EXTRA_ASSETS.Union(new string[] { "bootstrap.min.css", "bootstrap.bundle.min.js", "proc.js", "jquery.min.js", "jsgif.js", "styles.css", "styles-user.css", "placeholder.png" }))
             {
                 string target = $"{path}/{f}";
                 if (File.Exists(target))

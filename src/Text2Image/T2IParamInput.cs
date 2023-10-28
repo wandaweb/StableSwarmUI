@@ -4,7 +4,6 @@ using Newtonsoft.Json.Linq;
 using StableSwarmUI.Accounts;
 using StableSwarmUI.Core;
 using StableSwarmUI.Utils;
-using System;
 using System.IO;
 
 namespace StableSwarmUI.Text2Image;
@@ -19,10 +18,22 @@ public class T2IParamInput
         public T2IParamInput Input;
 
         public string Param;
+
+        public Func<string, string> EmbedFormatter;
+
+        public string[] Embeds, Loras;
+
+        public string Parse(string text)
+        {
+            return Input.ProcessPromptLike(text, this);
+        }
     }
 
     /// <summary>Mapping of prompt tag prefixes, to allow for registration of custom prompt tags.</summary>
     public static Dictionary<string, Func<string, PromptTagContext, string>> PromptTagProcessors = new();
+
+    /// <summary>Mapping of prompt tag prefixes, to allow for registration of custom prompt tags - specifically post-processing like lora (which remove from prompt and get read elsewhere).</summary>
+    public static Dictionary<string, Func<string, PromptTagContext, string>> PromptTagPostProcessors = new();
 
     static T2IParamInput()
     {
@@ -32,15 +43,18 @@ public class T2IParamInput
             string[] vals = data.Split(separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (vals.Length == 0)
             {
+                Logs.Warning($"Random input '{data}' is empty and will be ignored");
                 return null;
             }
-            return vals[context.Random.Next(vals.Length)];
+            return context.Parse(vals[context.Random.Next(vals.Length)]);
         };
         PromptTagProcessors["preset"] = (data, context) =>
         {
-            T2IPreset preset = context.Input.SourceSession.User.GetPreset(data);
+            string name = context.Parse(data);
+            T2IPreset preset = context.Input.SourceSession.User.GetPreset(name);
             if (preset is null)
             {
+                Logs.Warning($"Preset '{name}' does not exist and will be ignored");
                 return null;
             }
             preset.ApplyTo(context.Input);
@@ -50,7 +64,59 @@ public class T2IParamInput
             }
             return "";
         };
-        // TODO: Wildcards
+        PromptTagProcessors["embed"] = (data, context) =>
+        {
+            data = context.Parse(data);
+            if (context.Embeds is null)
+            {
+                Logs.Warning($"Embedding '{data}' ignored because the engine has not loaded the embeddings list");
+                return "";
+            }
+            string want = data.ToLowerFast().Replace('\\', '/');
+            string matched = T2IParamTypes.GetBestInList(want, context.Embeds);
+            if (matched is null)
+            {
+                Logs.Warning($"Embedding '{want}' does not exist and will be ignored");
+                return "";
+            }
+            return context.EmbedFormatter(matched.Replace('/', Path.DirectorySeparatorChar));
+        };
+        PromptTagProcessors["embedding"] = PromptTagProcessors["embed"];
+        PromptTagPostProcessors["lora"] = (data, context) =>
+        {
+            data = context.Parse(data);
+            string lora = data.ToLowerFast().Replace('\\', '/');
+            int colonIndex = lora.IndexOf(':');
+            double strength = 1;
+            if (colonIndex != -1 && double.TryParse(lora[(colonIndex + 1)..], out strength))
+            {
+                lora = lora[..colonIndex];
+            }
+            if (context.Loras is null)
+            {
+                Logs.Warning($"Lora '{data}' ignored because the engine has not loaded the lora list");
+                return "";
+            }
+            string matched = T2IParamTypes.GetBestInList(lora, context.Loras);
+            if (matched is not null)
+            {
+                List<string> loraList = context.Input.Get(T2IParamTypes.Loras);
+                List<string> weights = context.Input.Get(T2IParamTypes.LoraWeights);
+                if (loraList is null)
+                {
+                    loraList = new();
+                    weights = new();
+                }
+                loraList.Add(matched);
+                weights.Add(strength.ToString());
+                context.Input.Set(T2IParamTypes.Loras, loraList);
+                context.Input.Set(T2IParamTypes.LoraWeights, weights);
+                return "";
+            }
+            Logs.Warning($"Lora '{lora}' does not exist and will be ignored");
+            return null;
+        };
+        // TODO: Wildcards (random by user-editable listing files)
     }
 
     /// <summary>The raw values in this input. Do not use this directly, instead prefer:
@@ -113,6 +179,14 @@ public class T2IParamInput
             else if (val is List<Image> imgList)
             {
                 result[key] = imgList.Select(img => img.AsBase64).JoinString("|");
+            }
+            else if (val is List<string> strList)
+            {
+                result[key] = strList.JoinString(",");
+            }
+            else if (val is List<T2IModel> modelList)
+            {
+                result[key] = modelList.Select(m => m.Name).JoinString(",");
             }
             else if (val is T2IModel model)
             {
@@ -186,93 +260,59 @@ public class T2IParamInput
         {
             return "";
         }
+        string fixedVal = val.Replace('\0', '\a').Replace("\a", "");
         Random rand = new((int)Get(T2IParamTypes.Seed) + (int)Get(T2IParamTypes.VariationSeed, 0) + param.Type.Name.Length);
-        string lowRef = val.ToLowerFast();
-        string[] embeds = lowRef.Contains("<embed") ? Program.T2IModelSets["Embedding"].ListModelsFor(SourceSession).Select(m => m.Name).ToArray() : null;
-        string[] loras = lowRef.Contains("<lora:") ? Program.T2IModelSets["LoRA"].ListModelsFor(SourceSession).Select(m => m.Name.ToLowerFast()).ToArray() : null;
-        PromptTagContext context = new() { Input = this, Random = rand, Param = param.Type.ID };
-        string addBefore = "", addAfter = "";
-        string fixedVal = StringConversionHelper.QuickSimpleTagFiller(val, "<", ">", tag =>
-        {
-            (string prefix, string data) = tag.BeforeAndAfter(':');
-            if (string.IsNullOrWhiteSpace(data))
-            {
-                return $"<{tag}>";
-            }
-            switch (prefix.ToLowerFast())
-            {
-                case "embed":
-                case "embedding":
-                    {
-                        if (embeds is not null)
-                        {
-                            string want = data.ToLowerFast().Replace('\\', '/');
-                            string matched = embeds.FirstOrDefault(e => e.ToLowerFast().StartsWith(want)) ?? embeds.FirstOrDefault(e => e.ToLowerFast().Contains(want));
-                            if (matched is not null)
-                            {
-                                data = matched;
-                            }
-                        }
-                        return embedFormatter(data.Replace('/', Path.DirectorySeparatorChar));
-                    }
-                case "lora":
-                    {
-                        string lora = data.ToLowerFast().Replace('\\', '/');
-                        int colonIndex = lora.IndexOf(':');
-                        double strength = 1;
-                        if (colonIndex != -1 && double.TryParse(lora[(colonIndex + 1)..], out strength))
-                        {
-                            lora = lora[..colonIndex];
-                        }
-                        string matched = loras.FirstOrDefault(e => e.ToLowerFast().StartsWith(lora)) ?? loras.FirstOrDefault(e => e.ToLowerFast().Contains(lora));
-                        if (matched is not null)
-                        {
-                            List<string> loraList = Get(T2IParamTypes.Loras);
-                            List<string> weights = Get(T2IParamTypes.LoraWeights);
-                            if (loraList is null)
-                            {
-                                loraList = new();
-                                weights = new();
-                            }
-                            loraList.Add(matched);
-                            weights.Add(strength.ToString());
-                            Set(T2IParamTypes.Loras, loraList);
-                            Set(T2IParamTypes.LoraWeights, weights);
-                            return "";
-                        }
-                        else
-                        {
-                            return $"<{tag}>";
-                        }
-                    }
-                default:
-                    if (PromptTagProcessors.TryGetValue(prefix, out Func<string, PromptTagContext, string> proc))
-                    {
-                        string result = proc(data, context);
-                        if (result is not null)
-                        {
-                            if (result.StartsWithNull()) // Special case for preset tag modifying the current value
-                            {
-                                result = result[1..];
-                                if (result.Contains("{value}"))
-                                {
-                                    addBefore += result.Before("{value}");
-                                }
-                                addAfter += result.After("{value}");
-                                return "";
-                            }
-                            return result;
-                        }
-                    }
-                    return $"<{tag}>";
-            }
-        });
-        fixedVal = addBefore + fixedVal + addAfter;
+        string lowRef = fixedVal.ToLowerFast();
+        string[] embeds = lowRef.Contains("<embed") ? Program.T2IModelSets["Embedding"].ListModelNamesFor(SourceSession).ToArray() : null;
+        string[] loras = lowRef.Contains("<lora:") ? Program.T2IModelSets["LoRA"].ListModelNamesFor(SourceSession).Select(m => m.ToLowerFast()).ToArray() : null;
+        PromptTagContext context = new() { Input = this, Random = rand, Param = param.Type.ID, EmbedFormatter = embedFormatter, Embeds = embeds, Loras = loras };
+        fixedVal = ProcessPromptLike(fixedVal, context);
+        // Special trick to break handwritten comfy embeds as gently as possible (ie require Swarm syntax for embeds, as comfy's raw syntax has unwanted behaviors)
+        fixedVal = fixedVal.Replace("embedding:", "noembed:", StringComparison.OrdinalIgnoreCase).Replace("\aswarm_comfy_embed:", "embedding:");
         if (fixedVal != val)
         {
             ExtraMeta[$"original_{param.Type.ID}"] = val;
         }
-        return fixedVal;
+        return fixedVal.Replace("\a", "");
+    }
+
+    /// <summary>Special utility to process prompt inputs before the request is executed (to parse wildcards, embeddings, etc).</summary>
+    public string ProcessPromptLike(string val, PromptTagContext context)
+    {
+        if (val is null)
+        {
+            return null;
+        }
+        string addBefore = "", addAfter = "";
+        void processSet(Dictionary<string, Func<string, PromptTagContext, string>> set)
+        {
+            val = StringConversionHelper.QuickSimpleTagFiller(val, "<", ">", tag =>
+            {
+                (string prefix, string data) = tag.BeforeAndAfter(':');
+                if (!string.IsNullOrWhiteSpace(data) && set.TryGetValue(prefix, out Func<string, PromptTagContext, string> proc))
+                {
+                    string result = proc(data, context);
+                    if (result is not null)
+                    {
+                        if (result.StartsWithNull()) // Special case for preset tag modifying the current value
+                        {
+                            result = result[1..];
+                            if (result.Contains("{value}"))
+                            {
+                                addBefore += result.Before("{value}");
+                            }
+                            addAfter += result.After("{value}");
+                            return "";
+                        }
+                        return result;
+                    }
+                }
+                return $"<{tag}>";
+            }, false, 0);
+        }
+        processSet(PromptTagProcessors);
+        processSet(PromptTagPostProcessors);
+        return addBefore + val + addAfter;
     }
 
     /// <summary>Gets the raw value of the parameter, if it is present, or null if not.</summary>
@@ -347,7 +387,7 @@ public class T2IParamInput
         {
             T2IModelHandler handler = Program.T2IModelSets[param.Subtype ?? "Stable-Diffusion"];
             string best = T2IParamTypes.GetBestInList(name.Replace('\\', '/'), handler.Models.Keys.ToList());
-            return handler.Models[best];
+            return handler.Models.TryGetValue(best ?? name, out T2IModel actualModel) ? actualModel : new T2IModel() { Name = name };
         }
         if (param.IgnoreIf is not null && param.IgnoreIf == val)
         {
@@ -360,8 +400,8 @@ public class T2IParamInput
             T2IParamDataType.DECIMAL => param.SharpType == typeof(double) ? double.Parse(val) : float.Parse(val),
             T2IParamDataType.BOOLEAN => bool.Parse(val),
             T2IParamDataType.TEXT or T2IParamDataType.DROPDOWN => val,
-            T2IParamDataType.IMAGE => new Image(val),
-            T2IParamDataType.IMAGE_LIST => val.Split('|').Select(v => new Image(v)).ToList(),
+            T2IParamDataType.IMAGE => new Image(val, Image.ImageType.IMAGE, "png"),
+            T2IParamDataType.IMAGE_LIST => val.Split('|').Select(v => new Image(v, Image.ImageType.IMAGE, "png")).ToList(),
             T2IParamDataType.MODEL => getModel(val),
             T2IParamDataType.LIST => val.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList(),
             _ => throw new NotImplementedException()

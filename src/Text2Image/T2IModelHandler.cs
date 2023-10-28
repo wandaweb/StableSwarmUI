@@ -5,6 +5,7 @@ using Newtonsoft.Json.Linq;
 using StableSwarmUI.Accounts;
 using StableSwarmUI.Core;
 using StableSwarmUI.Utils;
+using StableSwarmUI.WebAPI;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
@@ -98,6 +99,36 @@ public class T2IModelHandler
         }
     }
 
+
+    /// <summary>Utility to destroy all stored metadata files.</summary>
+    public void MassRemoveMetadata()
+    {
+        lock (MetadataLock)
+        {
+            foreach ((LiteDatabase ldb, _) in ModelMetadataCachePerFolder.Values)
+            {
+                ldb.Dispose();
+            }
+            ModelMetadataCachePerFolder.Clear();
+            static void ClearFolder(string folder)
+            {
+                if (File.Exists($"{folder}/model_metadata.ldb"))
+                {
+                    try
+                    {
+                        File.Delete($"{folder}/model_metadata.ldb");
+                    }
+                    catch (IOException) { }
+                }
+                foreach (string subFolder in Directory.GetDirectories(folder))
+                {
+                    ClearFolder(subFolder);
+                }
+            }
+            ClearFolder(FolderPath);
+        }
+    }
+
     public List<T2IModel> ListModelsFor(Session session)
     {
         if (IsShutdown)
@@ -111,6 +142,13 @@ public class T2IModelHandler
         }
         Regex allowed = new(allowedStr, RegexOptions.Compiled | RegexOptions.IgnoreCase);
         return Models.Values.Where(m => allowed.IsMatch(m.Name)).ToList();
+    }
+
+    public List<string> ListModelNamesFor(Session session)
+    {
+        HashSet<string> list = ListModelsFor(session).Select(m => m.Name).ToHashSet();
+        list.UnionWith(T2IAPI.InternalExtraModels(ModelType).Keys);
+        return list.ToList();
     }
 
     /// <summary>Refresh the model list.</summary>
@@ -248,7 +286,7 @@ public class T2IModelHandler
         {
             if (File.Exists(prefix + suffix))
             {
-                return new Image(File.ReadAllBytes(prefix + suffix)).ToMetadataFormat();
+                return new Image(File.ReadAllBytes(prefix + suffix), Image.ImageType.IMAGE, suffix.AfterLast('.')).ToMetadataFormat();
             }
         }
         return null;

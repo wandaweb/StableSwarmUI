@@ -3,6 +3,7 @@
 */
 
 let suppressUpdate = true;
+let file_extensions_alt = {};
 
 function loadData() {
     let rawHash = window.location.hash;
@@ -57,6 +58,40 @@ function loadData() {
     }
 }
 
+function getExtension(filePath) {
+    if (filePath in file_extensions_alt) {
+        return file_extensions_alt[filePath];
+    }
+    return rawData.ext;
+}
+
+/** External callable. */
+function fix_video(path) {
+    let ext = getExtension(path);
+    if (ext != 'webm' && ext != 'mp4') {
+        return;
+    }
+    let matches = document.querySelectorAll(`img[data-img_path="${path}"]`);
+    for (let match of matches) {
+        if (match.tagName == 'VIDEO') {
+            continue;
+        }
+        let video = document.createElement('video');
+        video.loop = true;
+        video.muted = true;
+        video.autoplay = true;
+        video.classList = match.classList;
+        video.dataset.img_path = match.dataset.img_path;
+        video.onclick = "doPopupFor(this)";
+        video.onerror = "setImgPlaceholder(this)";
+        let source = document.createElement('source');
+        source.src = `${path}.${ext}`;
+        source.type = `video/${ext}`;
+        video.appendChild(source);
+        match.parentElement.replaceChild(video, match);
+    }
+}
+
 function updateStylesToMatchInputs() {
     toggleTopSticky();
     toggleLabelSticky();
@@ -82,7 +117,7 @@ function getNextAxis(axes, startId) {
 function getSelectedValKey(axis) {
     for (var subVal of axis.values) {
         if (window.getComputedStyle(document.getElementById('tab_' + axis.id + '__' + subVal.key)).display != 'none') {
-            return subVal.key;
+            return subVal.path;
         }
     }
     return null;
@@ -238,13 +273,13 @@ function getXAxisContent(x, y, xAxis, yval, x2Axis, x2val, y2Axis, y2val) {
             imgPath.push(null);
         }
         else if (subAxis.id == y) {
-            imgPath.push(yval.key);
+            imgPath.push(yval.path);
         }
         else if (x2Axis != null && subAxis.id == x2Axis.id) {
-            imgPath.push(x2val.key);
+            imgPath.push(x2val.path);
         }
         else if (y2Axis != null && subAxis.id == y2Axis.id) {
-            imgPath.push(y2val.key);
+            imgPath.push(y2val.path);
         }
         else {
             imgPath.push(getSelectedValKey(subAxis));
@@ -258,11 +293,19 @@ function getXAxisContent(x, y, xAxis, yval, x2Axis, x2val, y2Axis, y2val) {
         if (!canShowVal(xAxis.id, xVal.key)) {
             continue;
         }
-        imgPath[index] = xVal.key;
+        imgPath[index] = xVal.path;
         let slashed = imgPath.join('/');
-        let actualUrl = slashed + '.' + rawData.ext;
+        let ext = getExtension(slashed);
+        let actualUrl = slashed + '.' + ext;
         let id = scoreTrackCounter++;
-        newContent += `<td id="td-img-${id}"><span></span><img class="table_img" data-img_path="${slashed}" onclick="doPopupFor(this)" onerror="setImgPlaceholder(this)" src="${actualUrl}" alt="${actualUrl}" /></td>`;
+        newContent += `<td id="td-img-${id}"><span></span>`;
+        if (ext == 'mp4' || ext == 'webm') {
+            newContent += `<video loop autoplay muted class="table_img" data-img_path="${slashed}" onclick="doPopupFor(this)" onerror="setImgPlaceholder(this)" alt="${actualUrl}"><source src="${actualUrl}" type="video/${ext}"></source></video>`;
+        }
+        else {
+            newContent += `<img class="table_img" data-img_path="${slashed}" onclick="doPopupFor(this)" onerror="setImgPlaceholder(this)" src="${actualUrl}" alt="${actualUrl}" />`;
+        }
+        newContent += '</td>';
         let newScr = null;
         if (typeof getMetadataScriptFor != 'undefined') {
             newScr = document.createElement('script');
@@ -332,6 +375,9 @@ function getXAxisContent(x, y, xAxis, yval, x2Axis, x2val, y2Axis, y2val) {
 }
 
 function setImgPlaceholder(img) {
+    if (!img.parentElement) {
+        return;
+    }
     img.onerror = undefined;
     img.dataset.errored_src = img.src;
     img.src = 'placeholder.png';
@@ -494,6 +540,12 @@ function toggleShowVal(axis, val) {
     var show = canShowVal(axis, val);
     var element = document.getElementById('clicktab_' + axis + '__' + val);
     element.classList.toggle('tab_hidden', !show);
+    if (!show && element.classList.contains('active')) {
+        var next = [...element.parentElement.parentElement.getElementsByClassName('nav-link')].filter(e => !e.classList.contains('tab_hidden'));
+        if (next.length > 0) {
+            next[0].click();
+        }
+    }
     fillTable();
 }
 
@@ -650,6 +702,10 @@ function toggleLabelSticky() {
     }
 }
 
+function removeGeneratedImages() {
+    document.getElementById('save_image_output').innerHTML = '';
+}
+
 function makeImage(minRow = 0, doClear = true) {
     // Preprocess data
     var imageTable = document.getElementById('image_table');
@@ -681,17 +737,10 @@ function makeImage(minRow = 0, doClear = true) {
         var label = row.getElementsByClassName('axis_label_td')[0];
         rowData.push({ row, images, real_images, height, label, y });
     }
-    console.log(`Will create image at ${widest_width * columns} x ${total_height} pixels`);
-    var holder = document.getElementById('save_image_helper');
+    var holder = document.getElementById('save_image_output');
     if (doClear) {
-        for (var oldImage of holder.getElementsByTagName('img')) {
-            oldImage.remove();
-        }
-        for (var oldImage of holder.getElementsByTagName('canvas')) {
-            oldImage.remove();
-        }
+        removeGeneratedImages();
     }
-    document.getElementById('save_image_info').style.display = 'block';
     // Temporary canvas to measure what padding we need
     var canvas = new OffscreenCanvas(256, 256);
     var ctx = canvas.getContext('2d');
@@ -817,28 +866,31 @@ function makeImage(minRow = 0, doClear = true) {
             }
         }
     }
-    var imageType = $("#makeimage_type :selected").text();
+    var imageType = document.getElementById('makeimage_type').value;
     try {
         var data = canvas.toDataURL(`image/${imageType}`);
         canvas.remove();
-        var img = new Image(256, 256);
+        var img = new Image();
+        img.className = 'save_image_output_img';
         img.src = data;
         holder.appendChild(img);
     }
     catch (e) {
         holder.appendChild(canvas);
+        canvas.className = 'save_image_output_img';
         canvas.style.width = "200px";
         canvas.style.height = "200px";
     }
+    $('#save_image_output_modal').modal('show');
 }
 
 function makeGif() {
-    let holder = document.getElementById('save_image_helper');
-    document.getElementById('save_image_info').style.display = 'block';
-    for (var oldImage of holder.getElementsByTagName('img')) {
-        oldImage.remove();
-    }
+    let holder = document.getElementById('save_image_output');
+    removeGeneratedImages();
     let axisId = document.getElementById('makegif_axis').value;
+    if (axisId == 'x-axis') {
+        axisId = getCurrentSelectedAxis('x');
+    }
     let sizeMult = parseFloat(document.getElementById('makegif_size').value.replaceAll('x', ''));
     let speed = parseFloat(document.getElementById('makegif_speed').value.replaceAll('/s', ''));
     let axis = getAxisById(axisId);
@@ -858,9 +910,13 @@ function makeGif() {
         if (!canShowVal(axis.id, val.key)) {
             continue;
         }
-        imgPath[index] = val.key;
-        let actualUrl = imgPath.join('/') + '.' + rawData.ext;
+        imgPath[index] = val.path;
+        let slashed = imgPath.join('/');
+        let actualUrl = slashed + '.' + getExtension(slashed);
         images.push(actualUrl);
+    }
+    if (document.getElementById('makegif_direction').value == 'Backwards') {
+        images.reverse();
     }
     let encoder = new GIFEncoder();
     encoder.setRepeat(0);
@@ -884,10 +940,12 @@ function makeGif() {
                 let binary_gif = encoder.stream().getData();
                 let data_url = 'data:image/gif;base64,' + encode64(binary_gif);
                 let animatedImage = document.createElement('img');
+                animatedImage.className = 'save_image_output_img';
                 animatedImage.src = data_url;
                 image1.remove();
                 image2.remove();
                 holder.appendChild(animatedImage);
+                $('#save_image_output_modal').modal('show');
             }
             else {
                 image2 = new Image();

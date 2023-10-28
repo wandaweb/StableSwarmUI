@@ -206,7 +206,7 @@ public class T2IParamTypes
     }
 
     public static T2IRegisteredParam<string> Prompt, NegativePrompt, AspectRatio, BackendType, RefinerMethod, FreeUApplyTo;
-    public static T2IRegisteredParam<int> Images, Steps, Width, Height, BatchSize, ExactBackendID;
+    public static T2IRegisteredParam<int> Images, Steps, Width, Height, BatchSize, ExactBackendID, VAETileSize;
     public static T2IRegisteredParam<long> Seed, VariationSeed;
     public static T2IRegisteredParam<double> CFGScale, VariationSeedStrength, InitImageCreativity, RefinerControl, RefinerUpscale, ControlNetStrength, ReVisionStrength, AltResolutionHeightMult,
         FreeUBlock1, FreeUBlock2, FreeUSkip1, FreeUSkip2, GlobalRegionFactor, EndStepsEarly, SamplerSigmaMin, SamplerSigmaMax, SamplerRho;
@@ -214,7 +214,7 @@ public class T2IParamTypes
     public static T2IRegisteredParam<T2IModel> Model, RefinerModel, VAE, ControlNetModel, ReVisionModel, RegionalObjectInpaintingModel;
     public static T2IRegisteredParam<List<string>> Loras, LoraWeights;
     public static T2IRegisteredParam<List<Image>> PromptImages;
-    public static T2IRegisteredParam<bool> DoNotSave, ControlNetPreviewOnly, RevisionZeroPrompt;
+    public static T2IRegisteredParam<bool> DoNotSave, ControlNetPreviewOnly, RevisionZeroPrompt, SeamlessTileable;
 
     public static T2IParamGroup GroupRevision, GroupCore, GroupVariation, GroupResolution, GroupInitImage, GroupRefiners, GroupControlNet,
         GroupAdvancedModelAddons, GroupSwarmInternal, GroupFreeU, GroupRegionalPrompting, GroupAdvancedSampling;
@@ -331,7 +331,7 @@ public class T2IParamTypes
             "", IgnoreIf: "", Permission: "param_model", IsAdvanced: true, Toggleable: true, Subtype: "VAE", Group: GroupAdvancedModelAddons
             ));
         Loras = Register<List<string>>(new("LoRAs", "LoRAs (Low-Rank-Adaptation Models) are a way to customize the content of a model without totally replacing it.\nYou can enable one or several LoRAs over top of one model.",
-            "", IgnoreIf: "", IsAdvanced: true, Toggleable: true, GetValues: (session) => Program.T2IModelSets["LoRA"].ListModelsFor(session).Select(m => m.Name).Order().ToList(), Group: GroupAdvancedModelAddons, VisibleNormally: false
+            "", IgnoreIf: "", IsAdvanced: true, Toggleable: true, GetValues: (session) => Program.T2IModelSets["LoRA"].ListModelNamesFor(session).Order().ToList(), Group: GroupAdvancedModelAddons, VisibleNormally: false
             ));
         LoraWeights = Register<List<string>>(new("LoRA Weights", "Weight values for the LoRA model list.",
             "", IgnoreIf: "", IsAdvanced: true, Toggleable: true, Group: GroupAdvancedModelAddons, VisibleNormally: false
@@ -388,10 +388,16 @@ public class T2IParamTypes
         SamplerRho = Register<double>(new("Sampler Rho", "Rho value for the sampler.\nOnly applies to Karras/Exponential schedulers.",
             "7", Min: 0, Max: 1000, Step: 0.01, Toggleable: true, IsAdvanced: true, Group: GroupAdvancedSampling
             ));
+        SeamlessTileable = Register<bool>(new("Seamless Tileable", "Makes the generated image seamlessly tileable (like a 3D texture would be).",
+            "false", IgnoreIf: "false", IsAdvanced: true, Group: GroupAdvancedSampling, FeatureFlag: "seamless"
+            ));
+        VAETileSize = Register<int>(new("VAE Tile Size", "If enabled, decodes images through the VAE using tiles of this size.\nVAE Tiling reduces VRAM consumption, but takes longer and may impact quality.",
+            "512", Min: 320, Max: 4096, Step: 64, Toggleable: true, IsAdvanced: true, Group: GroupAdvancedSampling
+            ));
     }
 
     /// <summary>Gets the value in the list that best matches the input text (for user input handling).</summary>
-    public static string GetBestInList(string name, List<string> list)
+    public static string GetBestInList(string name, IEnumerable<string> list)
     {
         string backup = null;
         int bestLen = 999;
@@ -421,6 +427,7 @@ public class T2IParamTypes
     /// <summary>Converts a parameter value in a valid input for that parameter, or throws <see cref="InvalidDataException"/> if it can't.</summary>
     public static string ValidateParam(T2IParamType type, string val, Session session)
     {
+        string origVal = val;
         if (type is null)
         {
             throw new InvalidDataException("Unknown parameter type");
@@ -430,26 +437,26 @@ public class T2IParamTypes
             case T2IParamDataType.INTEGER:
                 if (!long.TryParse(val, out long valInt))
                 {
-                    throw new InvalidDataException($"Invalid integer value for param {type.Name} - must be a valid integer (eg '0', '3', '-5', etc)");
+                    throw new InvalidDataException($"Invalid integer value for param {type.Name} - '{val}' - must be a valid integer (eg '0', '3', '-5', etc)");
                 }
                 if (type.Min != 0 || type.Max != 0)
                 {
                     if (valInt < type.Min || valInt > type.Max)
                     {
-                        throw new InvalidDataException($"Invalid integer value for param {type.Name} - must be between {type.Min} and {type.Max}");
+                        throw new InvalidDataException($"Invalid integer value for param {type.Name} - '{val}' - must be between {type.Min} and {type.Max}");
                     }
                 }
                 return valInt.ToString();
             case T2IParamDataType.DECIMAL:
                 if (!double.TryParse(val, out double valDouble))
                 {
-                    throw new InvalidDataException($"Invalid decimal value for param {type.Name} - must be a valid decimal (eg '0.0', '3.5', '-5.2', etc)");
+                    throw new InvalidDataException($"Invalid decimal value for param {type.Name} - '{val}' - must be a valid decimal (eg '0.0', '3.5', '-5.2', etc)");
                 }
                 if (type.Min != 0 || type.Max != 0)
                 {
                     if (valDouble < type.Min || valDouble > type.Max)
                     {
-                        throw new InvalidDataException($"Invalid decimal value for param {type.Name} - must be between {type.Min} and {type.Max}");
+                        throw new InvalidDataException($"Invalid decimal value for param {type.Name} - '{val}' - must be between {type.Min} and {type.Max}");
                     }
                 }
                 return valDouble.ToString();
@@ -457,7 +464,7 @@ public class T2IParamTypes
                 val = val.ToLowerFast();
                 if (val != "true" && val != "false")
                 {
-                    throw new InvalidDataException($"Invalid boolean value for param {type.Name} - must be exactly 'true' or 'false'");
+                    throw new InvalidDataException($"Invalid boolean value for param {type.Name} - '{val}' - must be exactly 'true' or 'false'");
                 }
                 return val;
             case T2IParamDataType.TEXT:
@@ -467,7 +474,7 @@ public class T2IParamTypes
                     val = GetBestInList(val, type.GetValues(session));
                     if (val is null)
                     {
-                        throw new InvalidDataException($"Invalid value for param {type.Name} - must be one of: `{string.Join("`, `", type.GetValues(session))}`");
+                        throw new InvalidDataException($"Invalid value for param {type.Name} - '{val}' - must be one of: `{string.Join("`, `", type.GetValues(session))}`");
                     }
                 }
                 return val;
@@ -481,7 +488,7 @@ public class T2IParamTypes
                         vals[i] = GetBestInList(vals[i], possible);
                         if (vals[i] is null)
                         {
-                            throw new InvalidDataException($"Invalid value for param {type.Name} - must be one of: `{string.Join("`, `", type.GetValues(session))}`");
+                            throw new InvalidDataException($"Invalid value for param {type.Name} - '{val}' - must be one of: `{string.Join("`, `", type.GetValues(session))}`");
                         }
                     }
                     return vals.JoinString(",");
@@ -499,7 +506,7 @@ public class T2IParamTypes
                 if (!ValidBase64Matcher.IsOnlyMatches(val) || val.Length < 10)
                 {
                     string shortText = val.Length > 10 ? val[..10] + "..." : val;
-                    throw new InvalidDataException($"Invalid image value for param {type.Name} - must be a valid base64 string - got '{shortText}'");
+                    throw new InvalidDataException($"Invalid image value for param {type.Name} - '{val}' - must be a valid base64 string - got '{shortText}'");
                 }
                 return val;
             case T2IParamDataType.IMAGE_LIST:
@@ -518,7 +525,7 @@ public class T2IParamTypes
                     if (!ValidBase64Matcher.IsOnlyMatches(partVal) || partVal.Length < 10)
                     {
                         string shortText = partVal.Length > 10 ? partVal[..10] + "..." : partVal;
-                        throw new InvalidDataException($"Invalid image-list value for param {type.Name} - must be a valid base64 string - got '{shortText}'");
+                        throw new InvalidDataException($"Invalid image-list value for param {type.Name} - '{val}' - must be a valid base64 string - got '{shortText}'");
                     }
                     parts.Add(partVal);
                 }
@@ -528,10 +535,10 @@ public class T2IParamTypes
                 {
                     throw new InvalidDataException($"Invalid model sub-type for param {type.Name}: '{type.Subtype}' - are you sure that type name is correct? (Developer error)");
                 }
-                val = GetBestInList(val, handler.ListModelsFor(session).Select(s => s.Name).ToList());
+                val = GetBestInList(val, handler.ListModelNamesFor(session).ToList());
                 if (val is null)
                 {
-                    throw new InvalidDataException($"Invalid model value for param {type.Name} - are you sure that model name is correct?");
+                    throw new InvalidDataException($"Invalid model value for param {type.Name} - '{val}' - are you sure that model name is correct?");
                 }
                 return val;
         }

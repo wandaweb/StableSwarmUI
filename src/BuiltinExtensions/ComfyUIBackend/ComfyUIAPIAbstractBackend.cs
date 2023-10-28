@@ -36,6 +36,21 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             throw new Exception($"Remote error: {errorToken}");
         }
         RawObjectInfo = result;
+        Models ??= new();
+        void trackModels(string subtype, string node, string param)
+        {
+            if (RawObjectInfo.TryGetValue(node, out JToken loaderNode))
+            {
+                string[] modelList = loaderNode["input"]["required"][param][0].Select(t => (string)t).ToArray();
+                Models[subtype] = modelList.Select(m => m.Replace('\\', '/')).ToList();
+            }
+        }
+        trackModels("Stable-Diffusion", "CheckpointLoaderSimple", "ckpt_name");
+        trackModels("LoRA", "LoraLoader", "lora_name");
+        trackModels("VAE", "VAELoader", "vae_name");
+        trackModels("ControlNet", "ControlNetLoader", "control_net_name");
+        trackModels("ClipVision", "CLIPVisionLoader", "clip_name");
+        trackModels("Embedding", "SwarmEmbedLoaderListProvider", "embed_name");
         if (RawObjectInfo.TryGetValue("CheckpointLoaderSimple", out JToken modelLoader))
         {
             string[] models = modelLoader["input"]["required"]["ckpt_name"][0].Select(t => (string)t).ToArray();
@@ -214,7 +229,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                         Logs.Verbose($"ComfyUI Websocket sent: {output.Length} bytes of image data as event {eventId} in format {format} ({formatLabel}) to index {index}");
                         if (isReceivingOutputs)
                         {
-                            takeOutput(new Image(output[8..]));
+                            takeOutput(new Image(output[8..], Image.ImageType.IMAGE, formatLabel == "jpeg" ? "jpg" : formatLabel));
                         }
                         else
                         {
@@ -273,61 +288,54 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         List<Image> outputs = new();
         foreach (JToken outData in output["outputs"].Values())
         {
-            if (outData is not null && outData["videos"] is not null)
+            if (outData is null)
             {
-                Logs.Info("Displaying video " + outData.ToString());
-                foreach (JToken outVideo in outData["videos"])
-                {
-                    string fname = outVideo["filename"].ToString();
-                    byte[] video = await (await HttpClient.GetAsync($"{Address}/view?filename={HttpUtility.UrlEncode(fname)}", interrupt)).Content.ReadAsByteArrayAsync(interrupt);
-
-                    if (video == null || video.Length == 0)
-                    {
-                        Logs.Error($"Invalid/null/empty image data from ComfyUI server for '{fname}', under {outData.ToDenseDebugString()}");
-                        continue;
-                    }
-                    //todo: add to outputs and add a video output
-                }
+                Logs.Error($"null output data from ComfyUI server: {output.ToDenseDebugString()}");
                 continue;
             }
-            if (outData is not null && outData["gifs"] is not null)
-            {
-                Logs.Info("Displaying 'gifs' video " + outData.ToString());
-                foreach (JToken outVideo in outData["gifs"])
-                {
-                    string fname = outVideo["filename"].ToString();
-                    byte[] video = await (await HttpClient.GetAsync($"{Address}/view?filename={HttpUtility.UrlEncode(fname)}", interrupt)).Content.ReadAsByteArrayAsync(interrupt);
-
-                    if (video == null || video.Length == 0)
-                    {
-                        Logs.Error($"Invalid/null/empty image data from ComfyUI server for '{fname}', under {outData.ToDenseDebugString()}");
-                        continue;
-                    }
-                    //todo: add to outputs and add a video output
-                }
-                continue;
-            }
-            if (outData is null || outData["images"] is null)
-            {
-                Logs.Error($"Invalid/null/empty output data from ComfyUI server: {outData.ToDenseDebugString()}");
-                continue;
-            }
-            foreach (JToken outImage in outData["images"])
+            async Task LoadImage(JToken outImage, Image.ImageType type)
             {
                 string fname = outImage["filename"].ToString();
                 if ($"{outImage["type"]}" == "temp")
                 {
                     Logs.Debug($"Comfy - Skip temp image '{fname}'");
-                    continue;
+                    return;
+                }
+                string ext = fname.AfterLast('.');
+                if (ext == "gif")
+                {
+                    type = Image.ImageType.ANIMATION;
+                }
+                else if (ext == "mp4" || ext == "webm" || (outImage["format"].ToString() ?? "").StartsWith("video/"))
+                {
+                    type = Image.ImageType.VIDEO;
                 }
                 byte[] image = await(await HttpClient.GetAsync($"{Address}/view?filename={HttpUtility.UrlEncode(fname)}", interrupt)).Content.ReadAsByteArrayAsync(interrupt);
                 if (image == null || image.Length == 0)
                 {
                     Logs.Error($"Invalid/null/empty image data from ComfyUI server for '{fname}', under {outData.ToDenseDebugString()}");
-                    continue;
+                    return;
                 }
-                outputs.Add(new Image(image));
+                outputs.Add(new Image(image, type, ext));
                 PostResultCallback(fname);
+            }
+            if (outData["images"] is not null)
+            {
+                foreach (JToken outImage in outData["images"])
+                {
+                    await LoadImage(outImage, Image.ImageType.IMAGE);
+                }
+            }
+            else if (outData["gifs"] is not null)
+            {
+                foreach (JToken outGif in outData["gifs"])
+                {
+                    await LoadImage(outGif, Image.ImageType.ANIMATION);
+                }
+            }
+            else
+            {
+                Logs.Error($"invalid/empty output data from ComfyUI server: {outData.ToDenseDebugString()}");
             }
         }
         return outputs.ToArray();
@@ -349,6 +357,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
     public static string CreateWorkflow(T2IParamInput user_input, Func<string, string> initImageFixer, string ModelFolderFormat = null)
     {
         string workflow = null;
+        user_input.PreparsePromptLikes(x => $"\aswarm_comfy_embed:{x}");
         if (user_input.TryGet(ComfyUIBackendExtension.CustomWorkflowParam, out string customWorkflowName))
         {
             if (customWorkflowName.StartsWith("PARSED%"))
@@ -377,7 +386,6 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 throw new InvalidDataException("Unrecognized ComfyUI Workflow name.");
             }
         }
-        user_input.PreparsePromptLikes(x => $"embedding:{x}");
         if (workflow is not null && !user_input.Get(T2IParamTypes.ControlNetPreviewOnly))
         {
             if (Logs.MinimumLevel <= Logs.LogLevel.Verbose)
@@ -407,6 +415,10 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     else if (val is Image image)
                     {
                         return image.AsBase64;
+                    }
+                    else if (val is List<string> list)
+                    {
+                        return list.JoinString(",");
                     }
                     return val.ToString();
                 }

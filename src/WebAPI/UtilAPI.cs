@@ -1,6 +1,9 @@
 ﻿using FreneticUtilities.FreneticExtensions;
 using Newtonsoft.Json.Linq;
+using StableSwarmUI.Core;
+using StableSwarmUI.Text2Image;
 using StableSwarmUI.Utils;
+using System.Diagnostics;
 using System.IO;
 
 namespace StableSwarmUI.WebAPI;
@@ -12,6 +15,8 @@ public static class UtilAPI
     {
         API.RegisterAPICall(CountTokens);
         API.RegisterAPICall(TokenizeInDetail);
+        API.RegisterAPICall(Pickle2SafeTensor);
+        API.RegisterAPICall(WipeMetadata);
     }
 
     public static ConcurrentDictionary<string, CliplikeTokenizer> Tokenizers = new();
@@ -49,29 +54,52 @@ public static class UtilAPI
     }
 
     /// <summary>API route to count the CLIP-like tokens in a given text prompt.</summary>
-    public static async Task<JObject> CountTokens(string text, string tokenset = "clip")
+    public static async Task<JObject> CountTokens(string text, string tokenset = "clip", bool weighting = true)
     {
         (JObject error, CliplikeTokenizer tokenizer) = GetTokenizerForAPI(text, tokenset);
         if (error != null)
         {
             return error;
         }
-        int count = tokenizer.Encode(text).Length;
-        return new JObject() { ["count"] = count };
+        CliplikeTokenizer.Token[] tokens = weighting ? tokenizer.EncodeWithWeighting(text) : tokenizer.Encode(text);
+        return new JObject() { ["count"] = tokens.Length };
     }
 
     /// <summary>API route to tokenize some prompt text and get thorough detail about it.</summary>
-    public static async Task<JObject> TokenizeInDetail(string text, string tokenset = "clip")
+    public static async Task<JObject> TokenizeInDetail(string text, string tokenset = "clip", bool weighting = true)
     {
         (JObject error, CliplikeTokenizer tokenizer) = GetTokenizerForAPI(text, tokenset);
         if (error != null)
         {
             return error;
         }
-        int[] tokens = tokenizer.Encode(text);
+        CliplikeTokenizer.Token[] tokens = weighting ? tokenizer.EncodeWithWeighting(text) : tokenizer.Encode(text);
         return new JObject()
         {
-            ["tokens"] = new JArray(tokens.Select(t => new JObject() { ["id"] = t, ["text"] = tokenizer.Tokens[t] }).ToArray())
+            ["tokens"] = new JArray(tokens.Select(t => new JObject() { ["id"] = t.ID, ["weight"] = t.Weight, ["text"] = tokenizer.Tokens[t.ID] }).ToArray())
         };
+    }
+
+    /// <summary>API route to trigger bulk conversion of models from pickle format to safetensors.</summary>
+    public static async Task<JObject> Pickle2SafeTensor(string type, bool fp16)
+    {
+        if (!Program.T2IModelSets.TryGetValue(type, out T2IModelHandler models))
+        {
+            return new JObject() { ["error"] = $"Invalid type '{type}'." };
+        }
+        Process p = PythonLaunchHelper.LaunchGeneric("launchtools/pickle-to-safetensors.py", true, new[] { models.FolderPath, fp16 ? "true" : "false" });
+        await p.WaitForExitAsync(Program.GlobalProgramCancel);
+        return new JObject() { ["success"] = true };
+    }
+
+    /// <summary>API route to trigger a mass metadata reset.</summary>
+    public static async Task<JObject> WipeMetadata()
+    {
+        foreach (T2IModelHandler handler in Program.T2IModelSets.Values)
+        {
+            handler.MassRemoveMetadata();
+        }
+        ImageMetadataTracker.MassRemoveMetadata();
+        return new JObject() { ["success"] = true };
     }
 }
