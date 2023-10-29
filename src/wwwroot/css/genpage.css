@@ -363,7 +363,6 @@ body {
     opacity: 0.3;
 }
 .model-remote {
-    opacity: 0.75;
     background-color: var(--background-gray);
 }
 .sui_popover_model {
@@ -508,9 +507,8 @@ body {
 .bottom-info-bar-container {
     display: flex;
     flex-direction: row;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     justify-content: flex-start;
-    height: 2.1rem;
     border-bottom: 1px solid var(--light-border);
 }
 .bottom-info-bar-component {
@@ -518,8 +516,10 @@ body {
     padding-right: 0.2rem;
     border-left: 1px solid var(--light-border);
     border-right: 1px solid var(--light-border);
-    overflow: hidden;
     white-space: nowrap;
+}
+.num_jobs_span {
+    vertical-align: middle;
 }
 .path-list-part {
     border-bottom: 1px dotted var(--text);
