@@ -75,7 +75,16 @@ if __name__ == "__main__":
     os.chdir(f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes')
     
     # Get AnimateDiff
-    run(f'git clone https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved')
+    if not os.path.exists('ComfyUI-AnimateDiff-Evolved'):
+      run(f'git clone https://github.com/Kosinkadink/ComfyUI-AnimateDiff-Evolved')
+
+    # Get the video helper suite
+    if not os.path.exists('ComfyUI-VideoHelperSuite'):
+      run(f'git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite')
+
+    # Get FizzNodes for scheduled prompts
+    if not os.path.exists('ComfyUI_FizzNodes'):
+      run(f'git clone https://github.com/FizzleDorf/ComfyUI_FizzNodes')
 
     # Get ControlNet
     if (conf['controlnet'] == True):
@@ -133,7 +142,7 @@ if __name__ == "__main__":
             print('\n')
 
     # Download Motion LoRAs
-    foldername = f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes/ComfyUI-AnimateDiff-Evolved/loras'
+    foldername = f'{stableswarm_path}/{COMFY_SUBFOLDER}/custom_nodes/ComfyUI-AnimateDiff-Evolved/motion_lora'
     os.chdir(foldername)
     print(foldername)
     for model in conf['motion_loras']:
