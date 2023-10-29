@@ -196,6 +196,7 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false) 
     curImg.innerHTML = '';
     let isVideo = src.endsWith(".mp4") || src.endsWith(".webm");
     let img;
+    let buttons = createDiv(null, 'current-image-buttons');
     if (isVideo) {
         img = document.createElement('video');
         img.loop = true;
@@ -230,7 +231,6 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false) 
     img.dataset.batch_id = batchId;
     currentMetadataVal = metadata;
     let extrasWrapper = createDiv(null, 'current-image-extras-wrapper');
-    let buttons = createDiv(null, 'current-image-buttons');
     function naturalDim() {
         if (isVideo) {
             return [img.videoWidth, img.videoHeight];

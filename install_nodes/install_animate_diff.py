@@ -175,7 +175,7 @@ if __name__ == "__main__":
         foldername = f'{stableswarm_path}/Models/clip_vision'
         os.chdir(foldername)
         print(foldername)
-        for model in conf['ip_adapter_models']:
+        for model in conf['clip_vision_models']:
             if not already_downloaded(model):
                 print(f'Downloading {model}')
                 wget.download(model, bar=wget.bar_thermometer)
