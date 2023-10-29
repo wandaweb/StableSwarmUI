@@ -97,7 +97,7 @@ public class T2IModelClassSorter
             }
             return null;
         }
-        Register(new() { ID = "stable-diffusion-v1/textual-inverison", CompatClass = "stable-diffusion-v1", Name = "Stable Diffusion v1 Embedding", StandardWidth = 512, StandardHeight = 512, IsThisModelOfClass = (m, h) =>
+        Register(new() { ID = "stable-diffusion-v1/textual-inversion", CompatClass = "stable-diffusion-v1", Name = "Stable Diffusion v1 Embedding", StandardWidth = 512, StandardHeight = 512, IsThisModelOfClass = (m, h) =>
         {
             JToken emb_data = GetEmbeddingKey(h);
             if (emb_data is null || !(emb_data as JObject).TryGetValue("shape", out JToken shape))
@@ -106,7 +106,7 @@ public class T2IModelClassSorter
             }
             return shape.ToArray()[^1].Value<long>() == 768;
         }});
-        Register(new() { ID = "stable-diffusion-v2-768-v/textual-inverison", CompatClass = "stable-diffusion-v2", Name = "Stable Diffusion v2 Embedding", StandardWidth = 768, StandardHeight = 768, IsThisModelOfClass = (m, h) =>
+        Register(new() { ID = "stable-diffusion-v2-768-v/textual-inversion", CompatClass = "stable-diffusion-v2", Name = "Stable Diffusion v2 Embedding", StandardWidth = 768, StandardHeight = 768, IsThisModelOfClass = (m, h) =>
         {
             JToken emb_data = GetEmbeddingKey(h);
             if (emb_data is null)
@@ -120,13 +120,13 @@ public class T2IModelClassSorter
             return shape.ToArray()[^1].Value<long>() == 1024;
         }
         });
-        Register(new() { ID = "stable-diffusion-v2xl-v1-base/textual-inverison", CompatClass = "stable-diffusion-xl-v1", Name = "Stable Diffusion XL 1.0-Base Embedding", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
+        Register(new() { ID = "stable-diffusion-xl-v1-base/textual-inversion", CompatClass = "stable-diffusion-xl-v1", Name = "Stable Diffusion XL 1.0-Base Embedding", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) =>
         {
             return h.TryGetValue("clip_g", out JToken clip_g) && (clip_g as JObject).TryGetValue("shape", out JToken shape_g) && shape_g[1].Value<long>() == 1280
                 && h.TryGetValue("clip_l", out JToken clip_l) && (clip_l as JObject).TryGetValue("shape", out JToken shape_l) && shape_l[1].Value<long>() == 768;
         }});
         // Everything below this point does not autodetect, it must match through ModelSpec
-        Register(new() { ID = "stable-diffusion-xl-v1/vae", CompatClass = "stable-diffusion-v1", Name = "Stable Diffusion v1 VAE", StandardWidth = 512, StandardHeight = 512, IsThisModelOfClass = (m, h) => { return false; } });
+        Register(new() { ID = "stable-diffusion-v1/vae", CompatClass = "stable-diffusion-v1", Name = "Stable Diffusion v1 VAE", StandardWidth = 512, StandardHeight = 512, IsThisModelOfClass = (m, h) => { return false; } });
         Register(new() { ID = "stable-diffusion-xl-v1-base", CompatClass = "stable-diffusion-xl-v1", Name = "Stable Diffusion XL 1.0-Base", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; }});
         Register(new() { ID = "stable-diffusion-xl-v1-refiner", CompatClass = "stable-diffusion-xl-v1-refiner", Name = "Stable Diffusion XL 1.0-Refiner", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
         Register(new() { ID = "stable-diffusion-xl-v1-base/vae", CompatClass = "stable-diffusion-xl-v1", Name = "Stable Diffusion XL 1.0-Base VAE", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
@@ -134,6 +134,7 @@ public class T2IModelClassSorter
         {
             return isControlLora(h);
         }});
+        Register(new() { ID = "segmind-stable-diffusion-1b", CompatClass = "segmind-stable-diffusion-1b", Name = "Segmind Stable Diffusion 1B (SSD-1B)", StandardWidth = 1024, StandardHeight = 1024, IsThisModelOfClass = (m, h) => { return false; } });
     }
 
     /// <summary>Returns the model class that matches this model, or null if none.</summary>
