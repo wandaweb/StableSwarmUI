@@ -34,7 +34,9 @@ function addBackendToHtml(backend, disable, spot = null) {
     toggleSwitch.checked = backend.enabled;
     toggleSwitch.addEventListener('change', () => {
         backend.enabled = toggleSwitch.checked;
-        genericRequest('ToggleBackend', {'backend_id': backend.id, 'enabled': toggleSwitch.checked}, data => {});
+        genericRequest('ToggleBackend', {'backend_id': backend.id, 'enabled': toggleSwitch.checked}, data => {
+            loadBackendsList();
+        });
     });
     togglerSpan.appendChild(toggleSwitch);
     cardHeader.appendChild(togglerSpan);
@@ -75,17 +77,21 @@ function addBackendToHtml(backend, disable, spot = null) {
         }
     });
     let cardBody = createDiv(null, 'card-body');
+    let buttons = document.createElement('div');
+    let isLogAvailable = serverLogs.matchIdentifier(`backend-${backend.id}`) != null;
+    buttons.innerHTML = `<button class="basic-button backend-restart-button" disabled onclick="restart_backend('${backend.id}')">Restart</button> <button class="basic-button backend-log-view-button"${isLogAvailable ? '' : ' disabled'} onclick="serverLogs.showLogsForIdentifier('backend-${backend.id}')">View Logs</button> <span class="backend-last-used-time">Last used: <code>${backend.time_since_used}</code></span>`;
+    cardBody.appendChild(buttons);
     for (let setting of type.settings) {
         let input = document.createElement('div');
         let pop = `<div class="sui-popover" id="popover_setting_${backend.id}_${setting.name}"><b>${escapeHtml(setting.name)}</b> (${setting.type}):<br>&emsp;${escapeHtml(setting.description)}</div>`;
         if (setting.type == 'text') {
-            input.innerHTML = makeTextInput(null, `setting_${backend.id}_${setting.name}`, setting.name, setting.description, backend.settings[setting.name], false, setting.placeholder) + pop;
+            input.innerHTML = makeTextInput(null, `setting_${backend.id}_${setting.name}`, '', setting.name, setting.description, backend.settings[setting.name], 'normal', setting.placeholder) + pop;
         }
         else if (setting.type == 'integer') {
-            input.innerHTML = makeNumberInput(null, `setting_${backend.id}_${setting.name}`, setting.name, setting.description, backend.settings[setting.name], 0, 1000, 1) + pop;
+            input.innerHTML = makeNumberInput(null, `setting_${backend.id}_${setting.name}`, '', setting.name, setting.description, backend.settings[setting.name], 0, 1000, 1) + pop;
         }
         else if (setting.type == 'bool') {
-            input.innerHTML = makeCheckboxInput(null, `setting_${backend.id}_${setting.name}`, setting.name, setting.description, backend.settings[setting.name]) + pop;
+            input.innerHTML = makeCheckboxInput(null, `setting_${backend.id}_${setting.name}`, '', setting.name, setting.description, backend.settings[setting.name]) + pop;
         }
         else {
             console.log(`Cannot create input slot of type ${setting.type}`);
@@ -133,6 +139,7 @@ function addBackendToHtml(backend, disable, spot = null) {
 }
 
 function loadBackendsList() {
+    reviseStatusBar();
     genericRequest('ListBackends', {}, data => {
         hasLoadedBackends = true;
         for (let oldBack of Object.values(backends_loaded)) {
@@ -143,12 +150,15 @@ function loadBackendsList() {
                 spot.remove();
             }
             else {
+                let card = document.getElementById(`backend-card-${oldBack.id}`);
                 if (oldBack.status != newBack.status) {
-                    let card = document.getElementById(`backend-card-${oldBack.id}`);
                     card.classList.remove(`backend-${oldBack.status}`);
                     card.classList.add(`backend-${newBack.status}`);
                     card.querySelector('.card-title-status').innerText = newBack.status;
                 }
+                card.querySelector('.backend-restart-button').disabled = newBack.status != 'errored' && newBack.status != 'running';
+                card.querySelector('.backend-log-view-button').disabled = serverLogs.matchIdentifier(`backend-${newBack.id}`) == null;
+                card.querySelector('.backend-last-used-time').innerHTML = `Last used: <code>${newBack.time_since_used}</code>`;
                 if (newBack.modcount > oldBack.modcount) {
                     addBackendToHtml(newBack, true, spot);
                 }
@@ -165,11 +175,21 @@ function loadBackendsList() {
         for (let callback of backendsRevisedCallbacks) {
             callback();
         }
+        reviseStatusBar();
     });
 }
 
 function countBackendsByStatus(status) {
     return Object.values(backends_loaded).filter(x => x.enabled && x.status == status).length;
+}
+
+function toggleShowAdvancedBackends() {
+    let showAdvanced = document.getElementById('backends_show_advanced').checked;
+    for (let button of document.querySelectorAll('#backend_add_buttons button')) {
+        if (button.dataset.isStandard == 'false') {
+            button.style.display = showAdvanced ? 'inline-block' : 'none';
+        }
+    }
 }
 
 function loadBackendTypesMenu() {
@@ -180,8 +200,12 @@ function loadBackendTypesMenu() {
         for (let type of data.list) {
             backend_types[type.id] = type;
             let button = document.createElement('button');
+            button.dataset.isStandard = type.is_standard;
             button.title = type.description;
             button.innerText = type.name;
+            if (!type.is_standard) {
+                button.style.display = 'none';
+            }
             let id = type.id;
             button.addEventListener('click', () => { addNewBackend(id); });
             addButtonsSection.appendChild(button);
@@ -192,7 +216,6 @@ function loadBackendTypesMenu() {
 
 let backendsListView = document.getElementById('backends_list');
 let backendsCheckRateCounter = 0;
-let hasAppliedFirstRun = false;
 
 function isVisible(element) {
     // DOM Element visibility isn't supported in all browsers
@@ -205,17 +228,29 @@ function isVisible(element) {
 }
 
 function backendLoopUpdate() {
-    let loading = countBackendsByStatus('loading') + countBackendsByStatus('waiting');
-    if (loading > 0 || isVisible(backendsListView)) {
-        if (backendsCheckRateCounter++ % 5 == 0) {
+    if (isVisible(backendsListView)) {
+        serverLogs.onTabButtonClick();
+        if (backendsCheckRateCounter++ % 3 == 0) {
             loadBackendsList(); // TODO: only if have permission
         }
     }
     else {
-        if (!hasAppliedFirstRun) {
-            hasAppliedFirstRun = true;
-            refreshParameterValues();
-        }
         backendsCheckRateCounter = 0;
+    }
+}
+
+function restart_backend(id) {
+    if (confirm(`Are you sure you want to restart backend ${id}?`)) {
+        genericRequest('RestartBackends', {backend: `${id}`}, data => {
+            loadBackendsList();
+        });
+    }
+}
+
+function restart_all_backends() {
+    if (confirm('Are you sure you want to restart all backends?')) {
+        genericRequest('RestartBackends', {}, data => {
+            loadBackendsList();
+        });
     }
 }

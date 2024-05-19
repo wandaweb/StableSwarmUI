@@ -1,7 +1,7 @@
 ﻿using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using StableSwarmUI.Backends;
 using StableSwarmUI.Core;
@@ -10,141 +10,294 @@ using StableSwarmUI.Utils;
 using StableSwarmUI.WebAPI;
 using System.IO;
 using System.Net.Http;
-using System.Net.WebSockets;
-using System.Xml.Linq;
 
 namespace StableSwarmUI.Builtin_ComfyUIBackend;
 
 /// <summary>Main class for the ComfyUI Backend extension.</summary>
 public class ComfyUIBackendExtension : Extension
 {
+    /// <summary>Copy of <see cref="Extension.FilePath"/> for ComfyUI.</summary>
     public static string Folder;
 
-    public static Dictionary<string, string> Workflows;
+    public record class ComfyCustomWorkflow(string Name, string Workflow, string Prompt, string CustomParams, string ParamValues, string Image, string Description, bool EnableInSimple);
+
+    /// <summary>All current custom workflow IDs mapped to their data.</summary>
+    public static ConcurrentDictionary<string, ComfyCustomWorkflow> CustomWorkflows = new();
 
     /// <summary>Set of all feature-ids supported by ComfyUI backends.</summary>
-    public static HashSet<string> FeaturesSupported = new() { "comfyui", "refiners", "controlnet", "endstepsearly", "seamless" };
+    public static HashSet<string> FeaturesSupported = ["comfyui", "refiners", "controlnet", "endstepsearly", "seamless", "video", "variation_seed", "freeu"];
+
+    /// <summary>Set of feature-ids that were added presumptively during loading and should be removed if the backend turns out to be missing them.</summary>
+    public static HashSet<string> FeaturesDiscardIfNotFound = ["variation_seed", "freeu"];
 
     /// <summary>Extensible map of ComfyUI Node IDs to supported feature IDs.</summary>
     public static Dictionary<string, string> NodeToFeatureMap = new()
     {
         ["SwarmLoadImageB64"] = "comfy_loadimage_b64",
         ["SwarmSaveImageWS"] = "comfy_saveimage_ws",
+        ["SwarmLatentBlendMasked"] = "comfy_latent_blend_masked",
         ["SwarmKSampler"] = "variation_seed",
         ["FreeU"] = "freeu",
         ["AITemplateLoader"] = "aitemplate",
-        ["IPAdapter"] = "ipadapter"
+        ["IPAdapter"] = "ipadapter",
+        ["IPAdapterApply"] = "ipadapter",
+        ["IPAdapterModelLoader"] = "cubiqipadapter",
+        ["IPAdapterUnifiedLoader"] = "cubiqipadapterunified",
+        ["MiDaS-DepthMapPreprocessor"] = "controlnetpreprocessors",
+        ["RIFE VFI"] = "frameinterps"
     };
 
+    /// <inheritdoc/>
     public override void OnPreInit()
     {
         Folder = FilePath;
         LoadWorkflowFiles();
         Program.ModelRefreshEvent += Refresh;
+        Program.ModelPathsChangedEvent += OnModelPathsChanged;
         ScriptFiles.Add("Assets/comfy_workflow_editor_helper.js");
         StyleSheetFiles.Add("Assets/comfy_workflow_editor.css");
         T2IParamTypes.FakeTypeProviders.Add(DynamicParamGenerator);
+        // Temporary: remove old pycache files where we used to have python files, to prevent Comfy boot errors
+        Utilities.RemoveBadPycacheFrom($"{FilePath}/ExtraNodes");
+        Utilities.RemoveBadPycacheFrom($"{FilePath}/ExtraNodes/SwarmWebHelper");
+        T2IAPI.AlwaysTopKeys.Add("comfyworkflowraw");
+        T2IAPI.AlwaysTopKeys.Add("comfyworkflowparammetadata");
+        if (Directory.Exists($"{FilePath}/DLNodes/ComfyUI_IPAdapter_plus"))
+        {
+            FeaturesSupported.UnionWith(["ipadapter", "cubiqipadapterunified"]);
+            FeaturesDiscardIfNotFound.UnionWith(["ipadapter", "cubiqipadapterunified"]);
+        }
+        if (Directory.Exists($"{FilePath}/DLNodes/comfyui_controlnet_aux"))
+        {
+            FeaturesSupported.UnionWith(["controlnetpreprocessors"]);
+            FeaturesDiscardIfNotFound.UnionWith(["controlnetpreprocessors"]);
+        }
     }
 
+    /// <inheritdoc/>
     public override void OnShutdown()
     {
         T2IParamTypes.FakeTypeProviders.Remove(DynamicParamGenerator);
     }
 
-    public static T2IParamType FakeRawInputType = new("comfyworkflowraw", "", "", Type: T2IParamDataType.TEXT, ID: "comfyworkflowraw", FeatureFlag: "comfyui", HideFromMetadata: true); // TODO: Setting to toggle metadata
+    /// <summary>Forces all currently running comfy backends to restart.</summary>
+    public static async Task RestartAllComfyBackends()
+    {
+        List<Task> tasks = [];
+        foreach (ComfyUIAPIAbstractBackend backend in RunningComfyBackends)
+        {
+            tasks.Add(Program.Backends.ReloadBackend(backend.BackendData));
+        }
+        await Task.WhenAll(tasks);
+    }
+
+    public static T2IParamType FakeRawInputType = new("comfyworkflowraw", "", "", Type: T2IParamDataType.TEXT, ID: "comfyworkflowraw", FeatureFlag: "comfyui", HideFromMetadata: true), // TODO: Setting to toggle metadata
+        FakeParameterMetadata = new("comfyworkflowparammetadata", "", "", Type: T2IParamDataType.TEXT, ID: "comfyworkflowparammetadata", FeatureFlag: "comfyui", HideFromMetadata: true);
+
+    public static SingleCacheAsync<string, JObject> ParameterMetadataCacheHelper = new(s => s.ParseToJson());
 
     public T2IParamType DynamicParamGenerator(string name, T2IParamInput context)
     {
-        if (name == "comfyworkflowraw")
+        try
         {
-            return FakeRawInputType;
+            if (name == "comfyworkflowraw")
+            {
+                return FakeRawInputType;
+            }
+            if (name == "comfyworkflowparammetadata")
+            {
+                return FakeParameterMetadata;
+            }
+            if (context.TryGetRaw(FakeParameterMetadata, out object paramMetadataObj))
+            {
+                JObject paramMetadata = ParameterMetadataCacheHelper.GetValue((string)paramMetadataObj);
+                if (paramMetadata.TryGetValue(name, out JToken paramTok))
+                {
+                    return T2IParamType.FromNet((JObject)paramTok);
+                }
+                //Logs.Verbose($"Failed to find param metadata for {name} in {paramMetadata.Properties().Select(p => p.Name).JoinString(", ")}");
+            }
+            if (name.StartsWith("comfyrawworkflowinput") && (context.ValuesInput.ContainsKey("comfyworkflowraw") || context.ValuesInput.ContainsKey("comfyuicustomworkflow")))
+            {
+                string nameNoPrefix = name.After("comfyrawworkflowinput");
+                T2IParamDataType type = FakeRawInputType.Type;
+                ParamViewType numberType = ParamViewType.BIG;
+                if (nameNoPrefix.StartsWith("seed"))
+                {
+                    type = T2IParamDataType.INTEGER;
+                    numberType = ParamViewType.SEED;
+                    nameNoPrefix = nameNoPrefix.After("seed");
+                }
+                else
+                {
+                    foreach (T2IParamDataType possible in Enum.GetValues<T2IParamDataType>())
+                    {
+                        string typeId = possible.ToString().ToLowerFast();
+                        if (nameNoPrefix.StartsWith(typeId))
+                        {
+                            nameNoPrefix = nameNoPrefix.After(typeId);
+                            type = possible;
+                            break;
+                        }
+                    }
+                }
+                T2IParamType resType = FakeRawInputType with { Name = nameNoPrefix, ID = name, HideFromMetadata = false, Type = type, ViewType = numberType };
+                if (type == T2IParamDataType.MODEL)
+                {
+                    static string cleanup(string _, string val)
+                    {
+                        val = val.Replace('\\', '/');
+                        while (val.Contains("//"))
+                        {
+                            val = val.Replace("//", "/");
+                        }
+                        val = val.Replace('/', Path.DirectorySeparatorChar);
+                        return val;
+                    }
+                    resType = resType with { Clean = cleanup };
+                }
+                return resType;
+            }
         }
-        else if (name.StartsWith("comfyrawworkflowinput") && (context.ValuesInput.ContainsKey("comfyworkflowraw") || context.ValuesInput.ContainsKey("comfyuicustomworkflow")))
+        catch (Exception e)
         {
-            string nameNoPrefix = name.After("comfyrawworkflowinput");
-            T2IParamDataType type = FakeRawInputType.Type;
-            ParamViewType numberType = ParamViewType.BIG;
-            if (nameNoPrefix.StartsWith("seed"))
-            {
-                type = T2IParamDataType.INTEGER;
-                numberType = ParamViewType.SEED;
-                nameNoPrefix = nameNoPrefix.After("seed");
-            }
-            else
-            {
-                foreach (T2IParamDataType possible in Enum.GetValues<T2IParamDataType>())
-                {
-                    string typeId = possible.ToString().ToLowerFast();
-                    if (nameNoPrefix.StartsWith(typeId))
-                    {
-                        nameNoPrefix = nameNoPrefix.After(typeId);
-                        type = possible;
-                        break;
-                    }
-                }
-            }
-            T2IParamType resType = FakeRawInputType with { Name = nameNoPrefix, ID = name, HideFromMetadata = false, Type = type, ViewType = numberType };
-            if (type == T2IParamDataType.MODEL)
-            {
-                static string cleanup(string _, string val)
-                {
-                    val = val.Replace('\\', '/');
-                    while (val.Contains("//"))
-                    {
-                        val = val.Replace("//", "/");
-                    }
-                    val = val.Replace('/', Path.DirectorySeparatorChar);
-                    return val;
-                }
-                resType = resType with { Clean = cleanup };
-            }
-            return resType;
+            Logs.Error($"Error generating dynamic Comfy param {name}: {e}");
         }
         return null;
     }
 
     public static IEnumerable<ComfyUIAPIAbstractBackend> RunningComfyBackends => Program.Backends.RunningBackendsOfType<ComfyUIAPIAbstractBackend>();
 
+    public static string[] ExampleWorkflowNames;
+
     public void LoadWorkflowFiles()
     {
-        Workflows = new();
-        foreach (string workflow in Directory.EnumerateFiles($"{Folder}/Workflows", "*.json", new EnumerationOptions() { RecurseSubdirectories = true }).Order())
-        {
-            string fileName = workflow.Replace('\\', '/').After("/Workflows/");
-            if (fileName.EndsWith(".json"))
-            {
-                Workflows.Add(fileName.BeforeLast('.'), File.ReadAllText(workflow));
-            }
-        }
         CustomWorkflows.Clear();
-        if (Directory.Exists($"{Folder}/CustomWorkflows"))
+        Directory.CreateDirectory($"{FilePath}/CustomWorkflows");
+        Directory.CreateDirectory($"{FilePath}/CustomWorkflows/Examples");
+        string[] getCustomFlows(string path) => [.. Directory.EnumerateFiles($"{FilePath}/{path}", "*.*", new EnumerationOptions() { RecurseSubdirectories = true }).Select(f => f.Replace('\\', '/').After($"/{path}/")).Order()];
+        ExampleWorkflowNames = getCustomFlows("ExampleWorkflows");
+        string[] customFlows = getCustomFlows("CustomWorkflows");
+        bool anyCopied = false;
+        foreach (string workflow in ExampleWorkflowNames.Where(f => f.EndsWith(".json")))
         {
-            foreach (string workflow in Directory.EnumerateFiles($"{Folder}/CustomWorkflows", "*.json", new EnumerationOptions() { RecurseSubdirectories = true }).Order())
+            if (!customFlows.Contains($"Examples/{workflow}") && !customFlows.Contains($"Examples/{workflow}.deleted"))
             {
-                string fileName = workflow.Replace('\\', '/').After("/CustomWorkflows/");
-                if (fileName.EndsWith(".json"))
-                {
-                    string name = fileName.BeforeLast('.');
-                    CustomWorkflows.TryAdd(name, name);
-                }
+                File.Copy($"{FilePath}/ExampleWorkflows/{workflow}", $"{FilePath}/CustomWorkflows/Examples/{workflow}");
+                anyCopied = true;
             }
         }
+        if (anyCopied)
+        {
+            customFlows = getCustomFlows("CustomWorkflows");
+        }
+        foreach (string workflow in customFlows.Where(f => f.EndsWith(".json")))
+        {
+            CustomWorkflows.TryAdd(workflow.BeforeLast('.'), null);
+        }
+    }
+
+    public static ComfyCustomWorkflow GetWorkflowByName(string name)
+    {
+        if (!CustomWorkflows.TryGetValue(name, out ComfyCustomWorkflow workflow))
+        {
+            return null;
+        }
+        if (workflow is not null)
+        {
+            return workflow;
+        }
+        string path = $"{Folder}/CustomWorkflows/{name}.json";
+        if (!File.Exists(path))
+        {
+            CustomWorkflows.TryRemove(name, out _);
+            return null;
+        }
+        JObject json = File.ReadAllText(path).ParseToJson();
+        string getStringFor(string key)
+        {
+            if (!json.TryGetValue(key, out JToken data))
+            {
+                return null;
+            }
+            if (data.Type == JTokenType.String)
+            {
+                return data.ToString();
+            }
+            return data.ToString(Formatting.None);
+        }
+        string workflowData = getStringFor("workflow");
+        string prompt = getStringFor("prompt");
+        string customParams = getStringFor("custom_params");
+        string paramValues = getStringFor("param_values");
+        string image = getStringFor("image") ?? "/imgs/model_placeholder.jpg";
+        string description = getStringFor("description");
+        bool enableInSimple = json.TryGetValue("enable_in_simple", out JToken enableInSimpleTok) && enableInSimpleTok.ToObject<bool>();
+        workflow = new(name, workflowData, prompt, customParams, paramValues, image, description, enableInSimple);
+        CustomWorkflows[name] = workflow;
+        return workflow;
     }
 
     public void Refresh()
     {
-        LoadWorkflowFiles();
-        List<Task> tasks = new();
-        foreach (ComfyUIAPIAbstractBackend backend in RunningComfyBackends.ToArray())
+        List<Task> tasks = [];
+        try
         {
-            tasks.Add(backend.LoadValueSet());
+            ComfyUIRedirectHelper.ObjectInfoReadCacher.ForceExpire();
+            LoadWorkflowFiles();
+            foreach (ComfyUIAPIAbstractBackend backend in RunningComfyBackends.ToArray())
+            {
+                tasks.Add(backend.LoadValueSet(5));
+            }
         }
-        if (tasks.Any())
+        catch (Exception ex)
         {
-            Task.WaitAll(tasks.ToArray(), Program.GlobalProgramCancel);
+            Logs.Error($"Error refreshing ComfyUI: {ex}");
+        }
+        if (!tasks.Any())
+        {
+            return;
+        }
+        try
+        {
+            Task.WaitAll([.. tasks], Utilities.TimedCancel(TimeSpan.FromMinutes(0.5)));
+        }
+        catch (Exception ex)
+        {
+            Logs.Debug("ComfyUI refresh failed, will retry in background");
+            Logs.Verbose($"Error refreshing ComfyUI: {ex}");
+            Utilities.RunCheckedTask(() =>
+            {
+                try
+                {
+                    Task.WaitAll([.. tasks], Utilities.TimedCancel(TimeSpan.FromMinutes(5)));
+                }
+                catch (Exception ex2)
+                {
+                    Logs.Error($"Error refreshing ComfyUI: {ex2}");
+                }
+            });
         }
     }
 
+    public void OnModelPathsChanged()
+    {
+        foreach (ComfyUISelfStartBackend backend in Program.Backends.RunningBackendsOfType<ComfyUISelfStartBackend>())
+        {
+            if (backend.IsEnabled)
+            {
+                Program.Backends.ReloadBackend(backend.BackendData).Wait(Program.GlobalProgramCancel);
+            }
+        }
+    }
+
+    public static async Task RunArbitraryWorkflowOnFirstBackend(string workflow, Action<object> takeRawOutput)
+    {
+        ComfyUIAPIAbstractBackend backend = RunningComfyBackends.FirstOrDefault() ?? throw new InvalidOperationException("No available ComfyUI Backend to run this operation");
+        await backend.AwaitJobLive(workflow, "0", takeRawOutput, new(null), Program.GlobalProgramCancel);
+    }
+
+    public static LockObject ValueAssignmentLocker = new();
 
     public static void AssignValuesFromRaw(JObject rawObjectInfo)
     {
@@ -159,9 +312,30 @@ public class ComfyUIBackendExtension : Extension
                 Samplers = Samplers.Concat(ksampler["input"]["required"]["sampler_name"][0].Select(u => $"{u}")).Distinct().ToList();
                 Schedulers = Schedulers.Concat(ksampler["input"]["required"]["scheduler"][0].Select(u => $"{u}")).Distinct().ToList();
             }
-            if (rawObjectInfo.TryGetValue("IPAdapter", out JToken ipadapter))
+            if (rawObjectInfo.TryGetValue("SwarmKSampler", out JToken swarmksampler))
             {
-                IPAdapterModels = IPAdapterModels.Concat(ipadapter["input"]["required"]["model_name"][0].Select(m => $"{m}")).Distinct().ToList();
+                Samplers = Samplers.Concat(swarmksampler["input"]["required"]["sampler_name"][0].Select(u => $"{u}")).Distinct().ToList();
+                Schedulers = Schedulers.Concat(swarmksampler["input"]["required"]["scheduler"][0].Select(u => $"{u}")).Distinct().ToList();
+            }
+            if (rawObjectInfo.TryGetValue("IPAdapterUnifiedLoader", out JToken ipadapterCubiqUnified))
+            {
+                IPAdapterModels = IPAdapterModels.Concat(ipadapterCubiqUnified["input"]["required"]["preset"][0].Select(m => $"{m}")).Distinct().ToList();
+            }
+            else if (rawObjectInfo.TryGetValue("IPAdapter", out JToken ipadapter) && (ipadapter["input"]["required"] as JObject).TryGetValue("model_name", out JToken ipAdapterModelName))
+            {
+                IPAdapterModels = IPAdapterModels.Concat(ipAdapterModelName[0].Select(m => $"{m}")).Distinct().ToList();
+            }
+            else if (rawObjectInfo.TryGetValue("IPAdapterModelLoader", out JToken ipadapterCubiq))
+            {
+                IPAdapterModels = IPAdapterModels.Concat(ipadapterCubiq["input"]["required"]["ipadapter_file"][0].Select(m => $"{m}")).Distinct().ToList();
+            }
+            if (rawObjectInfo.TryGetValue("IPAdapterUnifiedLoaderFaceID", out JToken ipadapterCubiqUnifiedFace))
+            {
+                IPAdapterModels = IPAdapterModels.Concat(ipadapterCubiqUnifiedFace["input"]["required"]["preset"][0].Select(m => $"{m}")).Distinct().ToList();
+            }
+            if (rawObjectInfo.TryGetValue("GLIGENLoader", out JToken gligenLoader))
+            {
+                GligenModels = GligenModels.Concat(gligenLoader["input"]["required"]["gligen_name"][0].Select(m => $"{m}")).Distinct().ToList();
             }
             foreach ((string key, JToken data) in rawObjectInfo)
             {
@@ -176,271 +350,124 @@ public class ComfyUIBackendExtension : Extension
                 if (NodeToFeatureMap.TryGetValue(key, out string featureId))
                 {
                     FeaturesSupported.Add(featureId);
+                    FeaturesDiscardIfNotFound.Remove(featureId);
                 }
+            }
+            foreach (string feature in FeaturesDiscardIfNotFound)
+            {
+                FeaturesSupported.Remove(feature);
             }
         }
     }
 
-    public static LockObject ValueAssignmentLocker = new();
+    public static T2IRegisteredParam<string> WorkflowParam, CustomWorkflowParam, SamplerParam, SchedulerParam, RefinerUpscaleMethod, UseIPAdapterForRevision, VideoPreviewType, VideoFrameInterpolationMethod, GligenModel;
 
-    public static T2IRegisteredParam<string> WorkflowParam, CustomWorkflowParam, SamplerParam, SchedulerParam, RefinerUpscaleMethod, ControlNetPreprocessorParam, UseIPAdapterForRevision;
+    public static T2IRegisteredParam<bool> AITemplateParam, DebugRegionalPrompting, ShiftedLatentAverageInit;
 
-    public static T2IRegisteredParam<bool> AITemplateParam, DebugRegionalPrompting;
+    public static T2IRegisteredParam<double> IPAdapterWeight, SelfAttentionGuidanceScale, SelfAttentionGuidanceSigmaBlur;
 
-    public static T2IRegisteredParam<double> IPAdapterWeight;
+    public static T2IRegisteredParam<int> RefinerHyperTile, VideoFrameInterpolationMultiplier;
 
-    public static List<string> UpscalerModels = new() { "latent-nearest-exact", "latent-bilinear", "latent-area", "latent-bicubic", "latent-bislerp", "pixel-nearest-exact", "pixel-bilinear", "pixel-area", "pixel-bicubic" },
-        Samplers = new() { "euler", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_2m", "dpmpp_2m_sde", "ddim", "uni_pc", "uni_pc_bh2" },
-        Schedulers = new() { "normal", "karras", "exponential", "simple", "ddim_uniform" };
+    public static T2IRegisteredParam<string>[] ControlNetPreprocessorParams = new T2IRegisteredParam<string>[3];
 
-    public static List<string> IPAdapterModels = new() { "None" };
+    public static List<string> UpscalerModels = ["pixel-lanczos", "pixel-bicubic", "pixel-area", "pixel-bilinear", "pixel-nearest-exact", "latent-bislerp", "latent-bicubic", "latent-area", "latent-bilinear", "latent-nearest-exact"],
+        Samplers = ["euler", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_sde_gpu", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddim", "ddpm", "heunpp2", "lcm", "uni_pc", "uni_pc_bh2"],
+        Schedulers = ["normal", "karras", "exponential", "simple", "ddim_uniform", "sgm_uniform", "turbo", "align_your_steps"];
+
+    public static List<string> IPAdapterModels = ["None"];
+
+    public static List<string> GligenModels = ["None"];
 
     public static ConcurrentDictionary<string, JToken> ControlNetPreprocessors = new() { ["None"] = null };
 
-    /// <summary>All current custom workflow IDs. Values are just a copy of the name (because C# lacks a ConcurrentList).</summary>
-    public static ConcurrentDictionary<string, string> CustomWorkflows = new();
-
     public static T2IParamGroup ComfyGroup, ComfyAdvancedGroup;
 
+    /// <inheritdoc/>
     public override void OnInit()
     {
         UseIPAdapterForRevision = T2IParamTypes.Register<string>(new("Use IP-Adapter", "Use IP-Adapter for ReVision input handling.",
-            "None", IgnoreIf: "None", FeatureFlag: "ipadapter", GetValues: _ => IPAdapterModels, Group: T2IParamTypes.GroupRevision, OrderPriority: 15
+            "None", IgnoreIf: "None", FeatureFlag: "ipadapter", GetValues: _ => IPAdapterModels, Group: T2IParamTypes.GroupRevision, OrderPriority: 15, ChangeWeight: 1
             ));
         IPAdapterWeight = T2IParamTypes.Register<double>(new("IP-Adapter Weight", "Weight to use with IP-Adapter (if enabled).",
             "1", Min: -1, Max: 3, Step: 0.05, IgnoreIf: "1", FeatureFlag: "ipadapter", Group: T2IParamTypes.GroupRevision, ViewType: ParamViewType.SLIDER, OrderPriority: 16
             ));
         ComfyGroup = new("ComfyUI", Toggles: false, Open: false);
         ComfyAdvancedGroup = new("ComfyUI Advanced", Toggles: false, IsAdvanced: true, Open: false);
-        WorkflowParam = T2IParamTypes.Register<string>(new("[ComfyUI] Workflow", "What hand-written specialty workflow to use in ComfyUI (files in 'Workflows' folder within the ComfyUI extension)",
-            "basic", Toggleable: true, FeatureFlag: "comfyui", Group: ComfyAdvancedGroup, IsAdvanced: true, VisibleNormally: false,
-            GetValues: (_) => Workflows.Keys.ToList()
-            ));
-        CustomWorkflowParam = T2IParamTypes.Register<string>(new("[ComfyUI] Custom Workflow", "What custom workflow to use in ComfyUI (built in the Comfy Workflow Editor tab)",
-            "", Toggleable: true, FeatureFlag: "comfyui", Group: ComfyGroup, IsAdvanced: true, ValidateValues: false,
-            GetValues: (_) => CustomWorkflows.Keys.Order().ToList(),
-            Clean: ((_, val) => CustomWorkflows.ContainsKey(val) ? $"PARSED%{val}%{ReadCustomWorkflow(val)["prompt"]}" : val),
+        CustomWorkflowParam = T2IParamTypes.Register<string>(new("[ComfyUI] Custom Workflow", "What custom workflow to use in ComfyUI (built in the Comfy Workflow Editor tab).\nGenerally, do not use this directly.",
+            "", Toggleable: true, FeatureFlag: "comfyui", Group: ComfyGroup, IsAdvanced: true, ValidateValues: false, ChangeWeight: 8,
+            GetValues: (_) => [.. CustomWorkflows.Keys.Order()],
+            Clean: (_, val) => CustomWorkflows.ContainsKey(val) ? $"PARSED%{val}%{ComfyUIWebAPI.ReadCustomWorkflow(val)["prompt"]}" : val,
             MetadataFormat: v => v.StartsWith("PARSED%") ? v.After("%").Before("%") : v
             ));
-        SamplerParam = T2IParamTypes.Register<string>(new("[ComfyUI] Sampler", "Sampler type (for ComfyUI)",
-            "euler", Toggleable: true, FeatureFlag: "comfyui", Group: ComfyGroup,
+        SamplerParam = T2IParamTypes.Register<string>(new("Sampler", "Sampler type (for ComfyUI)\nGenerally, 'Euler' is fine, but for SD1 and SDXL 'dpmpp_2m' is popular when paired with the 'karras' scheduler.",
+            "euler", Toggleable: true, FeatureFlag: "comfyui", Group: T2IParamTypes.GroupSampling, OrderPriority: -5,
             GetValues: (_) => Samplers
             ));
-        SchedulerParam = T2IParamTypes.Register<string>(new("[ComfyUI] Scheduler", "Scheduler type (for ComfyUI)",
-            "normal", Toggleable: true, FeatureFlag: "comfyui", Group: ComfyGroup,
+        SchedulerParam = T2IParamTypes.Register<string>(new("Scheduler", "Scheduler type (for ComfyUI)\nGoes with the Sampler parameter above.",
+            "normal", Toggleable: true, FeatureFlag: "comfyui", Group: T2IParamTypes.GroupSampling, OrderPriority: -4,
             GetValues: (_) => Schedulers
             ));
         AITemplateParam = T2IParamTypes.Register<bool>(new("Enable AITemplate", "If checked, enables AITemplate for ComfyUI generations (UNet only). Only compatible with some GPUs.",
-            "false", IgnoreIf: "false", FeatureFlag: "aitemplate", Group: ComfyGroup
+            "false", IgnoreIf: "false", FeatureFlag: "aitemplate", Group: ComfyGroup, ChangeWeight: 5
+            ));
+        SelfAttentionGuidanceScale = T2IParamTypes.Register<double>(new("Self-Attention Guidance Scale", "Scale for Self-Attention Guidance.\n''Self-Attention Guidance (SAG) uses the intermediate self-attention maps of diffusion models to enhance their stability and efficacy.\nSpecifically, SAG adversarially blurs only the regions that diffusion models attend to at each iteration and guides them accordingly.''\nDefaults to 0.5.",
+            "0.5", Min: -2, Max: 5, Step: 0.1, FeatureFlag: "comfyui", Group: T2IParamTypes.GroupAdvancedSampling, IsAdvanced: true, Toggleable: true, ViewType: ParamViewType.SLIDER
+            ));
+        SelfAttentionGuidanceSigmaBlur = T2IParamTypes.Register<double>(new("Self-Attention Guidance Sigma Blur", "Blur-sigma for Self-Attention Guidance.\nDefaults to 2.0.",
+            "2", Min: 0, Max: 10, Step: 0.25, FeatureFlag: "comfyui", Group: T2IParamTypes.GroupAdvancedSampling, IsAdvanced: true, Toggleable: true, ViewType: ParamViewType.SLIDER
             ));
         RefinerUpscaleMethod = T2IParamTypes.Register<string>(new("Refiner Upscale Method", "How to upscale the image, if upscaling is used.",
-            "pixel-bilinear", Group: T2IParamTypes.GroupRefiners, OrderPriority: 1, FeatureFlag: "comfyui",
+            "pixel-bilinear", Group: T2IParamTypes.GroupRefiners, OrderPriority: 1, FeatureFlag: "comfyui", ChangeWeight: 1,
             GetValues: (_) => UpscalerModels
             ));
-        ControlNetPreprocessorParam = T2IParamTypes.Register<string>(new("ControlNet Preprocessor", "The preprocessor to use on the ControlNet input image.\nIf toggled off, will be automatically selected.\nUse 'None' to disable preprocessing.",
-            "None", Toggleable: true, FeatureFlag: "controlnet", Group: T2IParamTypes.GroupControlNet, OrderPriority: 3, GetValues: (_) => ControlNetPreprocessors.Keys.Order().OrderBy(v => v == "None" ? -1 : 0).ToList()
-            ));
+        for (int i = 0; i < 3; i++)
+        {
+            ControlNetPreprocessorParams[i] = T2IParamTypes.Register<string>(new($"ControlNet{T2IParamTypes.Controlnets[i].NameSuffix} Preprocessor", "The preprocessor to use on the ControlNet input image.\nIf toggled off, will be automatically selected.\nUse 'None' to disable preprocessing.",
+                "None", Toggleable: true, FeatureFlag: "controlnet", Group: T2IParamTypes.Controlnets[i].Group, OrderPriority: 3, GetValues: (_) => [.. ControlNetPreprocessors.Keys.Order().OrderBy(v => v == "None" ? -1 : 0)], ChangeWeight: 2
+                ));
+        }
         DebugRegionalPrompting = T2IParamTypes.Register<bool>(new("Debug Regional Prompting", "If checked, outputs masks from regional prompting for debug reasons.",
             "false", IgnoreIf: "false", FeatureFlag: "comfyui", VisibleNormally: false
             ));
+        RefinerHyperTile = T2IParamTypes.Register<int>(new("Refiner HyperTile", "The size of hypertiles to use for the refining stage.\nHyperTile is a technique to speed up sampling of large images by tiling the image and batching the tiles.\nThis is useful when using SDv1 models as the refiner. SDXL-Base models do not benefit as much.",
+            "256", Min: 64, Max: 2048, Step: 32, Toggleable: true, IsAdvanced: true, FeatureFlag: "comfyui", ViewType: ParamViewType.POT_SLIDER, Group: T2IParamTypes.GroupRefiners, OrderPriority: 20
+            ));
+        VideoPreviewType = T2IParamTypes.Register<string>(new("Video Preview Type", "How to display previews for generating videos.\n'Animate' shows a low-res animated video preview.\n'iterate' shows one frame at a time while it goes.\n'one' displays just the first frame.\n'none' disables previews.",
+            "animate", FeatureFlag: "comfyui", Group: T2IParamTypes.GroupVideo, GetValues: (_) => ["animate", "iterate", "one", "none"]
+            ));
+        VideoFrameInterpolationMethod = T2IParamTypes.Register<string>(new("Video Frame Interpolation Method", "How to interpolate frames in the video.\n'RIFE' or 'FILM' are two different decent interpolation model options.",
+            "RIFE", FeatureFlag: "frameinterps", Group: T2IParamTypes.GroupVideo, GetValues: (_) => ["RIFE", "FILM"], OrderPriority: 32
+            ));
+        VideoFrameInterpolationMultiplier = T2IParamTypes.Register<int>(new("Video Frame Interpolation Multiplier", "How many frames to interpolate between each frame in the video.\nHigher values are smoother, but make take significant time to save the output, and may have quality artifacts.",
+            "1", IgnoreIf: "1", Min: 1, Max: 10, Step: 1, FeatureFlag: "frameinterps", Group: T2IParamTypes.GroupVideo, OrderPriority: 33
+            ));
+        GligenModel = T2IParamTypes.Register<string>(new("GLIGEN Model", "Optionally use a GLIGEN model.\nGLIGEN is only compatible with SDv1 at time of writing.",
+            "None", IgnoreIf: "None", FeatureFlag: "comfyui", Group: T2IParamTypes.GroupRegionalPrompting, GetValues: (_) => GligenModels
+            ));
+        ShiftedLatentAverageInit = T2IParamTypes.Register<bool>(new("Shifted Latent Average Init", "If checked, shifts the empty latent to use a mean-average per-channel latent value (as calculated by Birchlabs).\nIf unchecked, default behavior of zero-init latents are used.\nThis can potentially improve the color range or even general quality on SDv1, SDv2, and SDXL models.\nNote that the effect is very minor.",
+            "false", IgnoreIf: "false", FeatureFlag: "comfyui", Group: T2IParamTypes.GroupAdvancedSampling, IsAdvanced: true
+            ));
         Program.Backends.RegisterBackendType<ComfyUIAPIBackend>("comfyui_api", "ComfyUI API By URL", "A backend powered by a pre-existing installation of ComfyUI, referenced via API base URL.", true);
-        Program.Backends.RegisterBackendType<ComfyUISelfStartBackend>("comfyui_selfstart", "ComfyUI Self-Starting", "A backend powered by a pre-existing installation of the ComfyUI, automatically launched and managed by this UI server.");
-        API.RegisterAPICall(ComfySaveWorkflow);
-        API.RegisterAPICall(ComfyReadWorkflow);
-        API.RegisterAPICall(ComfyListWorkflows);
-        API.RegisterAPICall(ComfyDeleteWorkflow);
-    }
-
-    /// <summary>API route to save a comfy workflow object to persistent file.</summary>
-    public async Task<JObject> ComfySaveWorkflow(string name, string workflow, string prompt, string custom_params)
-    {
-        string path = Utilities.StrictFilenameClean(name);
-        CustomWorkflows.TryAdd(path, path);
-        Directory.CreateDirectory($"{Folder}/CustomWorkflows");
-        path = $"{Folder}/CustomWorkflows/{path}.json";
-        JObject data = new()
-        {
-            ["workflow"] = workflow,
-            ["prompt"] = prompt,
-            ["custom_params"] = custom_params
-        };
-        File.WriteAllBytes(path, data.ToString().EncodeUTF8());
-        return new JObject() { ["success"] = true };
-    }
-
-    /// <summary>Method to directly read a custom workflow file.</summary>
-    public static JObject ReadCustomWorkflow(string name)
-    {
-        string path = Utilities.StrictFilenameClean(name);
-        path = $"{Folder}/CustomWorkflows/{path}.json";
-        if (!File.Exists(path))
-        {
-            return new JObject() { ["error"] = "Unknown custom workflow name." };
-        }
-        string data = Encoding.UTF8.GetString(File.ReadAllBytes(path));
-        return data.ParseToJson();
-    }
-
-    /// <summary>API route to read a comfy workflow object from persistent file.</summary>
-    public async Task<JObject> ComfyReadWorkflow(string name)
-    {
-        JObject val = ReadCustomWorkflow(name);
-        if (val.ContainsKey("error"))
-        {
-            return val;
-        }
-        return new JObject() { ["result"] = val };
-    }
-
-    /// <summary>API route to read a list of available Comfy custom workflows.</summary>
-    public async Task<JObject> ComfyListWorkflows()
-    {
-        return new JObject() { ["workflows"] = JToken.FromObject(CustomWorkflows.Keys.Order().ToList()) };
-    }
-
-    /// <summary>API route to read a delete a saved Comfy custom workflows.</summary>
-    public async Task<JObject> ComfyDeleteWorkflow(string name)
-    {
-        string path = Utilities.StrictFilenameClean(name);
-        CustomWorkflows.Remove(path, out _);
-        path = $"{Folder}/CustomWorkflows/{path}.json";
-        if (!File.Exists(path))
-        {
-            return new JObject() { ["error"] = "Unknown custom workflow name." };
-        }
-        File.Delete(path);
-        return new JObject() { ["success"] = true };
+        Program.Backends.RegisterBackendType<ComfyUISelfStartBackend>("comfyui_selfstart", "ComfyUI Self-Starting", "A backend powered by a pre-existing installation of the ComfyUI, automatically launched and managed by this UI server.", isStandard: true);
+        ComfyUIWebAPI.Register();
     }
 
     public override void OnPreLaunch()
     {
-        WebServer.WebApp.Map("/ComfyBackendDirect/{*Path}", ComfyBackendDirectHandler);
+        WebServer.WebApp.Map("/ComfyBackendDirect/{*Path}", ComfyUIRedirectHelper.ComfyBackendDirectHandler);
     }
 
-    /// <summary>Web route for viewing output images. This just works as a simple proxy.</summary>
-    public async Task ComfyBackendDirectHandler(HttpContext context)
+    public record struct ComfyBackendData(HttpClient Client, string Address, AbstractT2IBackend Backend);
+
+    public static IEnumerable<ComfyBackendData> ComfyBackendsDirect()
     {
-        if (context.Response.StatusCode == 404)
+        foreach (ComfyUIAPIAbstractBackend backend in RunningComfyBackends)
         {
-            return;
+            yield return new(ComfyUIAPIAbstractBackend.HttpClient, backend.Address, backend);
         }
-        HttpClient client;
-        string address;
-        ComfyUIAPIAbstractBackend backend = RunningComfyBackends.FirstOrDefault();
-        if (backend is null)
+        foreach (SwarmSwarmBackend swarmBackend in Program.Backends.RunningBackendsOfType<SwarmSwarmBackend>().Where(b => b.RemoteBackendTypes.Any(b => b.StartsWith("comfyui_"))))
         {
-            SwarmSwarmBackend altBack = Program.Backends.T2IBackends.Values.Select(b => b.Backend as SwarmSwarmBackend)
-                .Where(b => b is not null && b.Status == BackendStatus.RUNNING && b.RemoteBackendTypes.Any(b => b.StartsWith("comfyui_"))).FirstOrDefault();
-            if (altBack is not null)
-            {
-                client = altBack.HttpClient;
-                address = $"{altBack.Settings.Address}/ComfyBackendDirect";
-            }
-            else
-            {
-                context.Response.ContentType = "text/html";
-                context.Response.StatusCode = 400;
-                await context.Response.WriteAsync("<!DOCTYPE html><html><head><stylesheet>body{background-color:#101010;color:#eeeeee;}</stylesheet></head><body><span class=\"comfy-failed-to-load\">No ComfyUI backend available, loading failed.</span></body></html>");
-                await context.Response.CompleteAsync();
-                return;
-            }
+            yield return new(SwarmSwarmBackend.HttpClient, $"{swarmBackend.Settings.Address}/ComfyBackendDirect", swarmBackend);
         }
-        else
-        {
-            client = backend.HttpClient;
-            address = backend.Address;
-        }
-        string path = context.Request.Path.Value;
-        path = path.After("/ComfyBackendDirect");
-        if (path.StartsWith("/"))
-        {
-            path = path[1..];
-        }
-        if (!string.IsNullOrWhiteSpace(context.Request.QueryString.Value))
-        {
-            path = $"{path}{context.Request.QueryString.Value}";
-        }
-        if (context.WebSockets.IsWebSocketRequest)
-        {
-            WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
-            ClientWebSocket outSocket = new();
-            outSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
-            string scheme = address.BeforeAndAfter("://", out string addr);
-            scheme = scheme == "http" ? "ws" : "wss";
-            await outSocket.ConnectAsync(new Uri($"{scheme}://{addr}/{path}"), Program.GlobalProgramCancel);
-            Task a = Task.Run(async () =>
-            {
-                try
-                {
-                    byte[] recvBuf = new byte[10 * 1024 * 1024];
-                    while (true)
-                    {
-                        // TODO: Should this input be allowed to remain open forever? Need a timeout, but the ComfyUI websocket doesn't seem to keepalive properly.
-                        WebSocketReceiveResult received = await socket.ReceiveAsync(recvBuf, Program.GlobalProgramCancel);
-                        if (received.MessageType != WebSocketMessageType.Close)
-                        {
-                            await outSocket.SendAsync(recvBuf.AsMemory(0, received.Count), received.MessageType, received.EndOfMessage, Program.GlobalProgramCancel);
-                        }
-                        if (socket.CloseStatus.HasValue)
-                        {
-                            await outSocket.CloseAsync(socket.CloseStatus.Value, socket.CloseStatusDescription, Program.GlobalProgramCancel);
-                            return;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logs.Debug($"ComfyUI redirection failed: {ex}");
-                }
-            });
-            Task b = Task.Run(async () =>
-            {
-                try
-                {
-                    byte[] recvBuf = new byte[10 * 1024 * 1024];
-                    while (true)
-                    {
-                        WebSocketReceiveResult received = await outSocket.ReceiveAsync(recvBuf, Program.GlobalProgramCancel);
-                        if (received.MessageType != WebSocketMessageType.Close)
-                        {
-                            await socket.SendAsync(recvBuf.AsMemory(0, received.Count), received.MessageType, received.EndOfMessage, Program.GlobalProgramCancel);
-                        }
-                        if (socket.CloseStatus.HasValue)
-                        {
-                            await socket.CloseAsync(socket.CloseStatus.Value, socket.CloseStatusDescription, Program.GlobalProgramCancel);
-                            return;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logs.Debug($"ComfyUI redirection failed: {ex}");
-                }
-            });
-            await Task.WhenAll(a, b);
-            return;
-        }
-        // This code is utterly silly, but it's incredibly fragile, don't touch without significant testing
-        HttpResponseMessage response;
-        if (context.Request.Method == "POST")
-        {
-            HttpRequestMessage request = new(new HttpMethod("POST"), $"{address}/{path}") { Content = new StreamContent(context.Request.Body) };
-            request.Content.Headers.Add("Content-Type", context.Request.ContentType);
-            response = await client.SendAsync(request);
-        }
-        else
-        {
-            response = await client.SendAsync(new(new(context.Request.Method), $"{address}/{path}"));
-        }
-        int code = (int)response.StatusCode;
-        if (code != 200)
-        {
-            Logs.Debug($"ComfyUI redirection gave non-200 code: '{code}' for URL: {context.Request.Method} '{path}'");
-        }
-        Logs.Verbose($"Comfy Redir status code {code} from {context.Response.StatusCode} and type {response.Content.Headers.ContentType} for {context.Request.Method} '{path}'");
-        context.Response.StatusCode = code;
-        context.Response.ContentType = response.Content.Headers.ContentType.ToString();
-        await response.Content.CopyToAsync(context.Response.Body);
-        await context.Response.CompleteAsync();
     }
 }

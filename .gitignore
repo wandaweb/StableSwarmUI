@@ -6,6 +6,7 @@ obj/
 *.user
 *.suo
 Properties/
+.dotnet/
 
 # This project
 Output/
@@ -14,6 +15,7 @@ Models/
 tmp/
 Extensions/
 dlbackend/
+*.debug
 
 # Python
 __pycache__/

@@ -35,10 +35,23 @@ namespace StableSwarmUI.Text2Image
         public static Action<PostBatchEventParams> PostBatchEvent;
 
         /// <summary>Parameters for <see cref="PostBatchEvent"/>.</summary>
-        public record class PostBatchEventParams(T2IParamInput UserInput, ImageInBatch[] Images);
+        public record class PostBatchEventParams(T2IParamInput UserInput, ImageOutput[] Images);
 
-        /// <summary>Represents a single image within a batch of images, for <see cref="PostBatchEvent"/>.</summary>
-        public record class ImageInBatch(Image Image, Action RefuseImage);
+        /// <summary>Micro-class that represents an image-output and key related details.</summary>
+        public class ImageOutput
+        {
+            /// <summary>The generated image.</summary>
+            public Image Img;
+
+            /// <summary>The time in milliseconds it took to generate, or -1 if unknown.</summary>
+            public long GenTimeMS = -1;
+
+            /// <summary>If true, the image is a real final output. If false, there is something non-standard about this image (eg it's a secondary preview) and so should be excluded from grids/etc.</summary>
+            public bool IsReal = true;
+
+            /// <summary>An action that will remove/discard this image as relevant.</summary>
+            public Action RefuseImage;
+        }
 
         /// <summary>Helper to create a function to match a backend to a user input request.</summary>
         public static Func<BackendHandler.T2IBackendData, bool> BackendMatcherFor(T2IParamInput user_input)
@@ -51,11 +64,13 @@ namespace StableSwarmUI.Text2Image
                 if (typeLow != "any" && typeLow != backend.Backend.HandlerTypeData.ID.ToLowerFast())
                 {
                     Logs.Verbose($"Filter out backend {backend.ID} as the Type is specified as {typeLow}, but the backend type is {backend.Backend.HandlerTypeData.ID.ToLowerFast()}");
+                    user_input.RefusalReasons.Add($"Specific backend type requested in advanced parameters did not match");
                     return false;
                 }
                 if (requireId && backend.ID != reqId)
                 {
                     Logs.Verbose($"Filter out backend {backend.ID} as the request requires backend ID {reqId}, but the backend ID is {backend.ID}");
+                    user_input.RefusalReasons.Add($"Specific backend ID# requested in advanced parameters did not match");
                     return false;
                 }
                 HashSet<string> features = backend.Backend.SupportedFeatures.ToHashSet();
@@ -64,6 +79,7 @@ namespace StableSwarmUI.Text2Image
                     if (!features.Contains(flag))
                     {
                         Logs.Verbose($"Filter out backend {backend.ID} as the request requires flag {flag}, but the backend does not support it");
+                        user_input.RefusalReasons.Add($"Request requires flag '{flag}' which is not present on the backend");
                         return false;
                     }
                 }
@@ -71,25 +87,45 @@ namespace StableSwarmUI.Text2Image
                 {
                     bool requireModel(T2IRegisteredParam<T2IModel> param, string type)
                     {
-                        if (user_input.TryGet(param, out T2IModel model) && backend.Backend.Models.TryGetValue(type, out List<string> models) && !models.Contains(model.Name))
+                        if (user_input.TryGet(param, out T2IModel model) && model.Name.ToLowerFast() != "(none)" && backend.Backend.Models.TryGetValue(type, out List<string> models) && !models.Contains(model.Name) && !models.Contains(model.Name + ".safetensors"))
                         {
                             Logs.Verbose($"Filter out backend {backend.ID} as the request requires {type} model {model.Name}, but the backend does not have that model");
+                            user_input.RefusalReasons.Add($"Request requires model '{model.Name}' but the backend does not have that model");
                             return false;
                         }
                         return true;
                     }
-                    if (!requireModel(T2IParamTypes.Model, "Stable-Diffusion") || !requireModel(T2IParamTypes.RefinerModel, "Stable-Diffusion")
-                        || !requireModel(T2IParamTypes.VAE, "VAE") || !requireModel(T2IParamTypes.ControlNetModel, "ControlNet"))
+                    if (!requireModel(T2IParamTypes.Model, "Stable-Diffusion") || !requireModel(T2IParamTypes.RefinerModel, "Stable-Diffusion") || !requireModel(T2IParamTypes.VAE, "VAE"))
                     {
                         return false;
+                    }
+                    foreach (T2IParamTypes.ControlNetParamHolder controlnet in T2IParamTypes.Controlnets)
+                    {
+                        if (!requireModel(controlnet.Model, "ControlNet"))
+                        {
+                            return false;
+                        }
                     }
                     if (user_input.TryGet(T2IParamTypes.Loras, out List<string> loras) && backend.Backend.Models.TryGetValue("LoRA", out List<string> loraModels))
                     {
                         foreach (string lora in loras)
                         {
-                            if (!loraModels.Contains(lora))
+                            if (!loraModels.Contains(lora) && !loraModels.Contains(lora + ".safetensors"))
                             {
                                 Logs.Verbose($"Filter out backend {backend.ID} as the request requires lora {lora}, but the backend does not have that lora");
+                                user_input.RefusalReasons.Add($"Request requires LoRA '{lora}' but the backend does not have that LoRA");
+                                return false;
+                            }
+                        }
+                    }
+                    if (user_input.ExtraMeta.TryGetValue("used_embeddings", out object usedEmbeds) && backend.Backend.Models.TryGetValue("Embedding", out List<string> embedModels))
+                    {
+                        foreach (string embed in (List<string>)usedEmbeds)
+                        {
+                            if (!embedModels.Contains(embed) && !embedModels.Contains(embed + ".safetensors"))
+                            {
+                                Logs.Verbose($"Filter out backend {backend.ID} as the request requires embedding {embed}, but the backend does not have that embedding");
+                                user_input.RefusalReasons.Add($"Request requires embedding '{embed}' but the backend does not have that embedding");
                                 return false;
                             }
                         }
@@ -111,15 +147,15 @@ namespace StableSwarmUI.Text2Image
         }
 
         /// <summary>Internal handler route to create an image based on a user request.</summary>
-        public static async Task CreateImageTask(T2IParamInput user_input, string batchId, Session.GenClaim claim, Action<JObject> output, Action<string> setError, bool isWS, float backendTimeoutMin, Action<Image, string> saveImages)
+        public static async Task CreateImageTask(T2IParamInput user_input, string batchId, Session.GenClaim claim, Action<JObject> output, Action<string> setError, bool isWS, float backendTimeoutMin, Action<ImageOutput, string> saveImages)
         {
             await CreateImageTask(user_input, batchId, claim, output, setError, isWS, backendTimeoutMin, saveImages, true);
         }
 
         /// <summary>Internal handler route to create an image based on a user request.</summary>
-        public static async Task CreateImageTask(T2IParamInput user_input, string batchId, Session.GenClaim claim, Action<JObject> output, Action<string> setError, bool isWS, float backendTimeoutMin, Action<Image, string> saveImages, bool canCallTools)
+        public static async Task CreateImageTask(T2IParamInput user_input, string batchId, Session.GenClaim claim, Action<JObject> output, Action<string> setError, bool isWS, float backendTimeoutMin, Action<ImageOutput, string> saveImages, bool canCallTools)
         {
-            Stopwatch timer = Stopwatch.StartNew();
+            long timeStart = Environment.TickCount64;
             void sendStatus()
             {
                 if (isWS && user_input.SourceSession is not null)
@@ -142,7 +178,10 @@ namespace StableSwarmUI.Text2Image
                         user_input = user_input.Clone();
                         user_input.Set(T2IParamTypes.InitImage, multiImg);
                         user_input.Set(T2IParamTypes.InitImageCreativity, 0.7); // TODO: Configurable
-                        user_input.Remove(T2IParamTypes.ControlNetModel);
+                        foreach (T2IParamTypes.ControlNetParamHolder controlnet in T2IParamTypes.Controlnets)
+                        {
+                            user_input.Remove(controlnet.Model);
+                        }
                     }
                 }
             }
@@ -153,7 +192,7 @@ namespace StableSwarmUI.Text2Image
                 PreGenerateEvent?.Invoke(new(user_input));
                 claim.Extend(backendWaits: 1);
                 sendStatus();
-                backend = await Program.Backends.GetNextT2IBackend(TimeSpan.FromMinutes(backendTimeoutMin), user_input.Get(T2IParamTypes.Model),
+                backend = await Program.Backends.GetNextT2IBackend(TimeSpan.FromMinutes(backendTimeoutMin), user_input.Get(T2IParamTypes.Model), user_input,
                     filter: BackendMatcherFor(user_input), session: user_input.SourceSession, notifyWillLoad: sendStatus, cancel: claim.InterruptToken);
             }
             catch (InvalidDataException ex)
@@ -187,27 +226,34 @@ namespace StableSwarmUI.Text2Image
                 sendStatus();
                 long prepTime;
                 int numImagesGenned = 0;
-                long lastGenTime = 0;
+                long lastGenTime = Environment.TickCount64;
                 string genTimeReport = "? failed!";
-                void handleImage(Image img)
+                void handleImage(ImageOutput img)
                 {
-                    if (img is not null)
+                    lastGenTime = Environment.TickCount64;
+                    if (img.GenTimeMS < 0)
                     {
-                        lastGenTime = timer.ElapsedMilliseconds;
-                        genTimeReport = $"{prepTime / 1000.0:0.00} (prep) and {(lastGenTime - prepTime) / 1000.0:0.00} (gen) seconds";
-                        user_input.ExtraMeta["generation_time"] = genTimeReport;
-                        bool refuse = false;
-                        PostGenerateEvent?.Invoke(new(img, user_input, () => refuse = true));
-                        if (refuse)
-                        {
-                            Logs.Info($"Refused an image.");
-                        }
-                        else
-                        {
-                            (img, string metadata) = user_input.SourceSession.ApplyMetadata(img, user_input, numImagesGenned);
-                            saveImages(img, metadata);
-                            numImagesGenned++;
-                        }
+                        img.GenTimeMS = Environment.TickCount64 - prepTime;
+                    }
+                    long fullTime = Environment.TickCount64 - timeStart;
+                    genTimeReport = $"{(fullTime - img.GenTimeMS) / 1000.0:0.00} (prep) and {img.GenTimeMS / 1000.0:0.00} (gen) seconds";
+                    T2IParamInput copyInput = user_input.Clone();
+                    copyInput.ExtraMeta["generation_time"] = genTimeReport;
+                    if (!img.IsReal)
+                    {
+                        copyInput.ExtraMeta["intermediate"] = "intermediate output";
+                    }
+                    bool refuse = false;
+                    PostGenerateEvent?.Invoke(new(img.Img, copyInput, () => refuse = true));
+                    if (refuse)
+                    {
+                        Logs.Info($"Refused an image.");
+                    }
+                    else
+                    {
+                        (img.Img, string metadata) = copyInput.SourceSession.ApplyMetadata(img.Img, copyInput, numImagesGenned);
+                        saveImages(img, metadata);
+                        numImagesGenned++;
                     }
                 }
                 using (backend)
@@ -216,12 +262,16 @@ namespace StableSwarmUI.Text2Image
                     {
                         return;
                     }
-                    prepTime = timer.ElapsedMilliseconds;
+                    prepTime = Environment.TickCount64;
                     await backend.Backend.GenerateLive(user_input, batchId, obj =>
                     {
                         if (obj is Image img)
                         {
-                            handleImage(img);
+                            handleImage(new() { Img = img });
+                        }
+                        else if (obj is ImageOutput imgOut)
+                        {
+                            handleImage(imgOut);
                         }
                         else
                         {
@@ -230,7 +280,16 @@ namespace StableSwarmUI.Text2Image
                     });
                     if (numImagesGenned == 0)
                     {
-                        Logs.Info($"No images were generated (all refused, or failed).");
+                        if (claim.ShouldCancel)
+                        {
+                            Logs.Info("Generation session interrupted.");
+                            setError("Generation session interrupted.");
+                        }
+                        else
+                        {
+                            Logs.Info("No images were generated (all refused, or failed).");
+                            setError("No images were generated (all refused, or failed - check server logs for details).");
+                        }
                     }
                     else if (numImagesGenned == 1)
                     {
@@ -238,34 +297,56 @@ namespace StableSwarmUI.Text2Image
                     }
                     else
                     {
-                        Logs.Info($"Generated {numImagesGenned} images in {genTimeReport} ({((lastGenTime - prepTime) / numImagesGenned) / 1000.0:0.00} seconds per image)");
+                        long averageMs = (lastGenTime - prepTime) / numImagesGenned;
+                        Logs.Info($"Generated {numImagesGenned} images in {(Environment.TickCount64 - timeStart) / 1000.0:0.00} seconds ({averageMs / 1000.0:0.00} seconds per image)");
                     }
                 }
             }
-            catch (AbstractT2IBackend.PleaseRedirectException)
-            {
-                claim.Extend(gens: 1);
-                await CreateImageTask(user_input, batchId, claim, output, setError, isWS, backendTimeoutMin, saveImages, false);
-            }
-            catch (InvalidOperationException ex)
-            {
-                setError($"Invalid operation: {ex.Message}");
-                return;
-            }
-            catch (InvalidDataException ex)
-            {
-                setError($"Invalid data: {ex.Message}");
-                return;
-            }
-            catch (TaskCanceledException)
-            {
-                return;
-            }
             catch (Exception ex)
             {
-                Logs.Error($"Internal error processing T2I request: {ex}");
-                setError("Something went wrong while generating images.");
-                return;
+                if (ex is AggregateException ae)
+                {
+                    while (ae.InnerException is AggregateException e2 && e2 != ex && e2 != ae)
+                    {
+                        ae = e2;
+                        ex = e2;
+                    }
+                }
+                if (ex is AbstractT2IBackend.PleaseRedirectException)
+                {
+                    claim.Extend(gens: 1);
+                    await CreateImageTask(user_input, batchId, claim, output, setError, isWS, backendTimeoutMin, saveImages, false);
+                }
+                else if (ex is InvalidOperationException ioe)
+                {
+                    setError($"Invalid operation: {ioe.Message}");
+                    return;
+                }
+                else if (ex is InvalidDataException ide)
+                {
+                    setError($"Invalid data: {ide.Message}");
+                    return;
+                }
+                else if (ex.InnerException is InvalidOperationException ioe2)
+                {
+                    setError($"Invalid operation: {ioe2.Message}");
+                    return;
+                }
+                else if (ex.InnerException is InvalidDataException ide2)
+                {
+                    setError($"Invalid data: {ide2.Message}");
+                    return;
+                }
+                else if (ex is TaskCanceledException)
+                {
+                    return;
+                }
+                else
+                {
+                    Logs.Error($"Internal error processing T2I request: {ex}");
+                    setError("Something went wrong while generating images.");
+                    return;
+                }
             }
             finally
             {

@@ -25,13 +25,13 @@ public class APICallReflectBuilder
         [typeof(string[])] = (JToken input) => (true, input.ToList().Select(j => j.ToString()).ToArray())
     };
 
-    public static APICall BuildFor(object obj, MethodInfo method)
+    public static APICall BuildFor(object obj, MethodInfo method, bool isUserUpdate)
     {
         if (method.ReturnType != typeof(Task<JObject>))
         {
             throw new Exception($"Invalid API return type '{method.ReturnType.Name}' for method '{method.DeclaringType.Name}.{method.Name}'");
         }
-        APICaller caller = new(obj, method, new());
+        APICaller caller = new(obj, method, []);
         bool isWebSocket = false;
         foreach (ParameterInfo param in method.GetParameters())
         {
@@ -74,7 +74,7 @@ public class APICallReflectBuilder
             }
             else if (typeof(IDataHolder).IsAssignableFrom(param.ParameterType))
             {
-                List<Func<JObject, IDataHolder, string>> subAppliers = new();
+                List<Func<JObject, IDataHolder, string>> subAppliers = [];
                 foreach (FieldData field in IDataHolder.GetHelper(param.ParameterType).Fields)
                 {
                     if (!TypeCoercerMap.TryGetValue(field.Type, out Func<JToken, (bool, object)> fieldCoercer))
@@ -124,7 +124,7 @@ public class APICallReflectBuilder
                 throw new Exception($"Invalid API parameter type '{param.ParameterType.Name}' for param '{param.Name}' of method '{method.DeclaringType.Name}.{method.Name}'");
             }
         }
-        return new APICall(method.Name, caller.Call, isWebSocket);
+        return new APICall(method.Name, method, caller.Call, isWebSocket, isUserUpdate);
     }
 
     public record class APICaller(object Obj, MethodInfo Method, List<Func<HttpContext, Session, WebSocket, JObject, (string, object)>> InputMappers)

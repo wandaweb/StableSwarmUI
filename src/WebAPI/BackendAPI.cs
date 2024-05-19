@@ -1,26 +1,48 @@
 ﻿using FreneticUtilities.FreneticDataSyntax;
 using FreneticUtilities.FreneticExtensions;
 using Newtonsoft.Json.Linq;
+using StableSwarmUI.Accounts;
 using StableSwarmUI.Backends;
 using StableSwarmUI.Core;
 using StableSwarmUI.Utils;
 
 namespace StableSwarmUI.WebAPI;
 
+[API.APIClass("API routes to manage the server's backends.")]
 public class BackendAPI
 {
     public static void Register()
     {
         API.RegisterAPICall(ListBackendTypes);
         API.RegisterAPICall(ListBackends);
-        API.RegisterAPICall(DeleteBackend);
-        API.RegisterAPICall(ToggleBackend);
-        API.RegisterAPICall(EditBackend);
-        API.RegisterAPICall(AddNewBackend);
+        API.RegisterAPICall(DeleteBackend, true);
+        API.RegisterAPICall(ToggleBackend, true);
+        API.RegisterAPICall(EditBackend, true);
+        API.RegisterAPICall(AddNewBackend, true);
+        API.RegisterAPICall(RestartBackends, true);
+        API.RegisterAPICall(FreeBackendMemory, true);
     }
 
-    /// <summary>API route to list currently available backend-types.</summary>
-    public static async Task<JObject> ListBackendTypes()
+    [API.APIDescription("Returns of a list of all available backend types.",
+        """
+            "list":
+            [
+                "id": "idhere",
+                "name": "namehere",
+                "description": "descriptionhere",
+                "settings":
+                [
+                    {
+                        "name": "namehere",
+                        "type": "typehere",
+                        "description": "descriptionhere",
+                        "placeholder": "placeholderhere"
+                    }
+                ],
+                "is_standard": false
+            ]
+        """)]
+    public static async Task<JObject> ListBackendTypes(Session session)
     {
         return new() { ["list"] = JToken.FromObject(Program.Backends.BackendTypes.Values.Select(b => b.NetDescription).ToList()) };
     }
@@ -28,6 +50,8 @@ public class BackendAPI
     /// <summary>Create a network object to represent a backend cleanly.</summary>
     public static JObject BackendToNet(BackendHandler.T2IBackendData backend, bool full = false)
     {
+        long timeLastRelease = backend.TimeLastRelease;
+        long timeSinceUsed = timeLastRelease == 0 ? 0 : (Environment.TickCount64 - timeLastRelease) / 1000;
         JObject data = new()
         {
             ["type"] = backend.Backend.HandlerTypeData.ID,
@@ -38,7 +62,10 @@ public class BackendAPI
             ["features"] = new JArray(backend.Backend.SupportedFeatures.ToArray()),
             ["enabled"] = backend.Backend.IsEnabled,
             ["title"] = backend.Backend.Title,
-            ["max_usages"] = backend.Backend.MaxUsages
+            ["can_load_models"] = backend.Backend.CanLoadModels,
+            ["max_usages"] = backend.Backend.MaxUsages,
+            ["seconds_since_used"] = timeSinceUsed,
+            ["time_since_used"] = timeLastRelease == 0 ? "Never" : TimeSpan.FromSeconds(-timeSinceUsed).SimpleFormat(true, false)
         };
         if (full)
         {
@@ -47,8 +74,14 @@ public class BackendAPI
         return data;
     }
 
-    /// <summary>API route to shutdown and delete a registered backend.</summary>
-    public static async Task<JObject> DeleteBackend(int backend_id)
+    [API.APIDescription("Shuts down and deletes a registered backend by ID.",
+        """
+            "result": "Deleted."
+            // OR
+            "result": "Already didn't exist."
+        """)]
+    public static async Task<JObject> DeleteBackend(Session session,
+        [API.APIParameter("ID of the backend to delete.")] int backend_id)
     {
         if (Program.LockSettings)
         {
@@ -61,8 +94,15 @@ public class BackendAPI
         return new JObject() { ["result"] = "Already didn't exist." };
     }
 
-    /// <summary>API route to disable or re-enable a backend.</summary>
-    public static async Task<JObject> ToggleBackend(int backend_id, bool enabled)
+    [API.APIDescription("Disables or re-enables a backend by ID.",
+        """
+            "result": "Success."
+            // OR
+            "result": "No change."
+        """)]
+    public static async Task<JObject> ToggleBackend(Session session,
+        [API.APIParameter("ID of the backend to toggle.")] int backend_id,
+        [API.APIParameter("If true, backend should be enabled. If false, backend should be disabled.")] bool enabled)
     {
         if (Program.LockSettings)
         {
@@ -77,7 +117,7 @@ public class BackendAPI
             return new JObject() { ["result"] = "No change." };
         }
         backend.Backend.IsEnabled = enabled;
-        backend.Backend.Reserved = true;
+        backend.Backend.ShutDownReserve = true;
         Program.Backends.BackendsEdited = true;
         while (backend.CheckIsInUse)
         {
@@ -96,12 +136,30 @@ public class BackendAPI
             backend.Backend.Status = BackendStatus.WAITING;
             Program.Backends.BackendsToInit.Enqueue(backend);
         }
-        backend.Backend.Reserved = false;
+        backend.Backend.ShutDownReserve = false;
         return new JObject() { ["result"] = "Success." };
     }
 
-    /// <summary>API route to modify and re-init an already registered backend.</summary>
-    public static async Task<JObject> EditBackend(int backend_id, string title, JObject raw_inp)
+    [API.APIDescription("Modify and re-init an already registered backend.",
+        """
+            "id": "idhere",
+            "type": "typehere",
+            "status": "statushere",
+            "settings":
+            {
+                "namehere": valuehere
+            },
+            "modcount": 0,
+            "features": [ "featureidhere", ... ],
+            "enabled": true,
+            "title": "titlehere",
+            "can_load_models": true,
+            "max_usages": 0
+        """)]
+    public static async Task<JObject> EditBackend(Session session,
+        [API.APIParameter("ID of the backend to edit.")] int backend_id,
+        [API.APIParameter("New title of the backend.")] string title,
+        [API.APIParameter(" Input should contain a map of `\"settingname\": value`.")] JObject raw_inp)
     {
         if (Program.LockSettings)
         {
@@ -120,10 +178,31 @@ public class BackendAPI
         return BackendToNet(result);
     }
 
-    /// <summary>API route to list currently registered backends.</summary>
-    public static async Task<JObject> ListBackends(bool nonreal = false, bool full_data = false)
+    [API.APIDescription("Returns a list of currently registered backends.",
+        """
+            "idhere":
+            {
+                "id": "idhere",
+                "type": "typehere",
+                "status": "statushere",
+                "settings":
+                {
+                    "namehere": valuehere
+                },
+                "modcount": 0,
+                "features": [ "featureidhere", ... ],
+                "enabled": true,
+                "title": "titlehere",
+                "can_load_models": true,
+                "max_usages": 0,
+                "current_model": "modelnamehere" // Only if `full_data` is true
+            }
+        """)]
+    public static async Task<JObject> ListBackends(Session session,
+        [API.APIParameter("If true, include 'nonreal' backends (ones that were spawned temporarily/internally).")] bool nonreal = false,
+        [API.APIParameter("If true, include nonessential data about backends (eg what model is currently loaded).")] bool full_data = false)
     {
-        JObject toRet = new();
+        JObject toRet = [];
         foreach (BackendHandler.T2IBackendData data in Program.Backends.T2IBackends.Values.OrderBy(d => d.ID))
         {
             if (!data.Backend.IsReal && !nonreal)
@@ -135,8 +214,24 @@ public class BackendAPI
         return toRet;
     }
 
-    /// <summary>API route to add a new backend.</summary>
-    public static async Task<JObject> AddNewBackend(string type_id)
+    [API.APIDescription("Add a new backend of the specified type.",
+        """
+            "id": "idhere",
+            "type": "typehere",
+            "status": "statushere",
+            "settings":
+            {
+                "namehere": valuehere
+            },
+            "modcount": 0,
+            "features": [ "featureidhere", ... ],
+            "enabled": true,
+            "title": "titlehere",
+            "can_load_models": true,
+            "max_usages": 0
+        """)]
+    public static async Task<JObject> AddNewBackend(Session session,
+        [API.APIParameter("ID of what type of backend to add (see `ListBackendTypes`).")] string type_id)
     {
         if (Program.LockSettings)
         {
@@ -148,5 +243,61 @@ public class BackendAPI
         }
         BackendHandler.T2IBackendData data = Program.Backends.AddNewOfType(type);
         return BackendToNet(data);
+    }
+
+    [API.APIDescription("Restart all backends or a specific one.",
+        """
+            "result": "Success.",
+            "count": 1 // Number of backends restarted
+        """)]
+    public static async Task<JObject> RestartBackends(Session session,
+        [API.APIParameter("What backend ID to restart, or `all` for all.")] string backend = "all")
+    {
+        if (Program.LockSettings)
+        {
+            return new() { ["error"] = "Settings are locked." };
+        }
+        int count = 0;
+        foreach (BackendHandler.T2IBackendData data in Program.Backends.T2IBackends.Values)
+        {
+            if (backend != "all" && backend != $"{data.ID}")
+            {
+                continue;
+            }
+            if (data.Backend.Status == BackendStatus.RUNNING || data.Backend.Status == BackendStatus.ERRORED)
+            {
+                await Program.Backends.ShutdownBackendCleanly(data);
+                Program.Backends.DoInitBackend(data);
+                count++;
+            }
+        }
+        return new JObject() { ["result"] = "Success.", ["count"] = count };
+    }
+
+    [API.APIDescription("Free memory from all backends or a specific one.",
+        """
+            "result": true,
+            "count": 1 // Number of backends memory was freed from
+        """)]
+    public static async Task<JObject> FreeBackendMemory(Session session,
+        [API.APIParameter("If true, system RAM should be cleared too. If false, only VRAM should be cleared.")] bool system_ram = false,
+        [API.APIParameter("What backend ID to restart, or `all` for all.")] string backend = "all")
+    {
+        List<Task> tasks = [];
+        foreach (AbstractT2IBackend target in Program.Backends.RunningBackendsOfType<AbstractT2IBackend>())
+        {
+            if (backend != "all" && backend != $"{target.BackendData.ID}")
+            {
+                continue;
+            }
+            tasks.Add(target.FreeMemory(system_ram));
+        }
+        if (tasks.IsEmpty())
+        {
+            return new JObject() { ["result"] = false, ["count"] = 0 };
+        }
+        await Task.WhenAll(tasks);
+        Utilities.CleanRAM();
+        return new JObject() { ["result"] = true, ["count"] = tasks.Count };
     }
 }

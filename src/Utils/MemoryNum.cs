@@ -1,22 +1,17 @@
 ﻿namespace StableSwarmUI.Utils;
 
 /// <summary>Mini-struct to hold data about a memory size number.</summary>
-public struct MemoryNum
+public struct MemoryNum(long inBytes)
 {
-    public long InBytes;
+    public long InBytes = inBytes;
 
-    public MemoryNum(long inBytes)
-    {
-        InBytes = inBytes;
-    }
+    public readonly float KiB => InBytes / 1024f;
 
-    public float KiB => InBytes / 1024f;
+    public readonly float MiB => KiB / 1024f;
 
-    public float MiB => KiB / 1024f;
+    public readonly float GiB => MiB / 1024f;
 
-    public float GiB => MiB / 1024f;
-
-    public override string ToString()
+    public override readonly string ToString()
     {
         if (InBytes > 1024 * 1024 * 1024)
         {

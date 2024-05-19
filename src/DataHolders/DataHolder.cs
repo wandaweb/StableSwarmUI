@@ -18,7 +18,7 @@ public interface IDataHolder
 
     public static DataHolderHelper GetHelper(Type t)
     {
-        return Helpers.GetOrAdd(t, t2 => Activator.CreateInstance(typeof(DataHolderHelper<>).MakeGenericType(t2)) as DataHolderHelper);
+        return Helpers.GetOrCreate(t, () => Activator.CreateInstance(typeof(DataHolderHelper<>).MakeGenericType(t)) as DataHolderHelper);
     }
 
     IDataHolder Clone();
@@ -30,9 +30,9 @@ public class DataHolderHelper
 
     public record struct FieldData(FieldInfo Field, IDataHolder.NetData Data)
     {
-        public Type Type => Field.FieldType;
-        public string Name => Data.Name;
-        public bool Required => Data.Required;
+        public readonly Type Type => Field.FieldType;
+        public readonly string Name => Data.Name;
+        public readonly bool Required => Data.Required;
     }
 
     public FieldData[] Fields;

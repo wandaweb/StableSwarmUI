@@ -9,7 +9,14 @@ using StableSwarmUI.WebAPI;
 using System.IO;
 using System.Net.Sockets;
 using System.Net.WebSockets;
+using SixLabors.Fonts;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
+using SixLabors.ImageSharp.Drawing.Processing;
 using static StableSwarmUI.Builtin_GridGeneratorExtension.GridGenCore;
+using Image = StableSwarmUI.Utils.Image;
+using ISImage = SixLabors.ImageSharp.Image;
+using ISImageRGBA = SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>;
 
 namespace StableSwarmUI.Builtin_GridGeneratorExtension;
 
@@ -33,7 +40,16 @@ public class GridGeneratorExtension : Extension
                     return list;
                 }
                 string first = list[0];
-                return list.Select(v => $"{first}={v}").ToList();
+                return list.Select(v =>
+                {
+                    bool skip = v.StartsWith("SKIP:");
+                    if (skip)
+                    {
+                        v = v["SKIP:".Length..].Trim();
+                        return $"SKIP:{first}={v}";
+                    }
+                    return $"{first}={v}";
+                }).ToList();
             }));
         PresetsParameter = T2IParamTypes.Register<string>(new("[Grid Gen] Presets", "Apply parameter presets to the image. Can use a comma-separated list to apply multiple per-cell, eg 'a, b || a, c || b, c'",
             "", VisibleNormally: false, AlwaysRetain: true, Toggleable: true, ValidateValues: false, ChangeWeight: 2, GetValues: (session) => session.User.GetAllPresets().Select(p => p.Title).ToList()));
@@ -95,15 +111,14 @@ public class GridGeneratorExtension : Extension
             if (data.Claim.ShouldCancel)
             {
                 Logs.Debug("Grid gen hook cancelling per user interrupt request.");
-                runner.Grid.MustCancel = true;
                 return Task.CompletedTask;
             }
             Task[] waitOn = data.GetActive();
-            if (waitOn.Length > data.Session.User.Restrictions.CalcMaxT2ISimultaneous)
+            if (waitOn.Length > data.MaxSimul)
             {
                 Task.WaitAny(waitOn);
             }
-            if (Volatile.Read(ref data.ErrorOut) is not null)
+            if (Volatile.Read(ref data.ErrorOut) is not null && !data.ContinueOnError)
             {
                 throw new InvalidOperationException("Errored");
             }
@@ -128,6 +143,7 @@ public class GridGeneratorExtension : Extension
                     match.ApplyTo(thisParams);
                 }
             }
+            thisParams.Set(T2IParamTypes.NoPreviews, true);
             int iteration = runner.Iteration;
             Task t = Task.Run(() => T2IEngine.CreateImageTask(thisParams, $"{iteration}", data.Claim, data.AddOutput, setError, true, Program.ServerSettings.Backends.PerRequestTimeoutMinutes,
                 (image, metadata) =>
@@ -136,35 +152,57 @@ public class GridGeneratorExtension : Extension
                     string mainpath = $"{set.Grid.Runner.BasePath}/{set.BaseFilepath}";
                     string ext = set.Grid.Format;
                     string metaExtra = "";
-                    if (image.Type != Image.ImageType.IMAGE)
+                    if (image.Img.Type != Image.ImageType.IMAGE)
                     {
-                        ext = image.Extension;
+                        ext = image.Img.Extension;
                         metaExtra += $"file_extensions_alt[\"{set.BaseFilepath}\"] = \"{ext}\"\nfix_video(\"{set.BaseFilepath}\")";
                     }
                     string targetPath = $"{mainpath}.{ext}";
                     string dir = targetPath.Replace('\\', '/').BeforeLast('/');
-                    if (!Directory.Exists(dir))
+                    if (set.Grid.OutputType == Grid.OutputyTypeEnum.WEB_PAGE)
                     {
-                        Directory.CreateDirectory(dir);
-                    }
-                    File.WriteAllBytes(targetPath, image.ImageData);
-                    if (set.Grid.PublishMetadata)
-                    {
-                        if (!string.IsNullOrWhiteSpace(metadata))
+                        if (!Directory.Exists(dir))
                         {
+                            Directory.CreateDirectory(dir);
+                        }
+                        File.WriteAllBytes(targetPath, image.Img.ImageData);
+                        if (set.Grid.PublishMetadata && (!string.IsNullOrWhiteSpace(metadata) || !string.IsNullOrWhiteSpace(metaExtra)))
+                        {
+                            metadata ??= "{}";
                             File.WriteAllBytes($"{mainpath}.metadata.js", $"all_metadata[\"{set.BaseFilepath}\"] = {metadata}\n{metaExtra}".EncodeUTF8());
                         }
+                        if (data.ShowOutputs)
+                        {
+                            data.AddOutput(new JObject() { ["image"] = $"/{set.Grid.Runner.URLBase}/{set.BaseFilepath}.{ext}", ["metadata"] = metadata });
+                        }
                     }
-                    data.AddOutput(new JObject() { ["image"] = $"/{set.Grid.Runner.URLBase}/{set.BaseFilepath}.{ext}", ["metadata"] = metadata });
+                    else
+                    {
+                        (string url, string filePath) = thisParams.Get(T2IParamTypes.DoNotSave, false) ? (data.Session.GetImageB64(image.Img), null) : data.Session.SaveImage(image.Img, iteration, thisParams, metadata);
+                        if (url == "ERROR")
+                        {
+                            setError($"Server failed to save an image.");
+                            return;
+                        }
+                        if (data.ShowOutputs)
+                        {
+                            data.AddOutput(new JObject() { ["image"] = url, ["batch_index"] = $"{iteration}", ["metadata"] = string.IsNullOrWhiteSpace(metadata) ? null : metadata });
+                        }
+                        if (set.Grid.OutputType == Grid.OutputyTypeEnum.GRID_IMAGE)
+                        {
+                            data.GeneratedOutputs.TryAdd(set.BaseFilepath, image.Img);
+                        }
+                    }
                 }));
             lock (data.UpdateLock)
             {
                 data.Rendering.Add(t);
             }
-            Task.Delay(20).Wait(); // Tiny few-ms delay to encourage tasks retaining order.
-            if (Program.Backends.QueuedRequests > Program.Backends.Count)
+            int requests = Program.Backends.QueuedRequests;
+            if (requests < Program.ServerSettings.Backends.MaxRequestsForcedOrder)
             {
-                Task.Delay(100).Wait(); // Add even more delay if we're loading up the backends.
+                Logs.Debug($"Grid Gen micro-pausing to maintain order as {requests} < {Program.ServerSettings.Backends.MaxRequestsForcedOrder}");
+                Task.Delay(20).Wait(); // Tiny few-ms delay to encourage tasks retaining order.
             }
             return t;
         };
@@ -180,16 +218,50 @@ public class GridGeneratorExtension : Extension
     {
         API.RegisterAPICall(GridGenRun);
         API.RegisterAPICall(GridGenDoesExist);
+        API.RegisterAPICall(GridGenSaveData);
+        API.RegisterAPICall(GridGenDeleteData);
+        API.RegisterAPICall(GridGenGetData);
+        API.RegisterAPICall(GridGenListData);
+    }
+
+    public async Task<JObject> GridGenSaveData(Session session, string gridName, bool isPublic, JObject rawData)
+    {
+        (isPublic ? Program.Sessions.GenericSharedUser : session.User).SaveGenericData("gridgenerator", gridName, rawData["data"].ToString());
+        return new JObject() { ["success"] = true };
+    }
+
+    public async Task<JObject> GridGenDeleteData(Session session, string gridName)
+    {
+        session.User.DeleteGenericData("gridgenerator", gridName);
+        Program.Sessions.GenericSharedUser.DeleteGenericData("gridgenerator", gridName);
+        return new JObject() { ["success"] = true };
+    }
+
+    public async Task<JObject> GridGenGetData(Session session, string gridName)
+    {
+        string data = session.User.GetGenericData("gridgenerator", gridName) ?? Program.Sessions.GenericSharedUser.GetGenericData("gridgenerator", gridName);
+        if (data is null)
+        {
+            return new() { ["error"] = "Could not find that Grid Generator save." };
+        }
+        return new JObject() { ["data"] = data.ParseToJson() };
+    }
+
+    public async Task<JObject> GridGenListData(Session session)
+    {
+        List<string> data = session.User.ListAllGenericData("gridgenerator");
+        data.AddRange(Program.Sessions.GenericSharedUser.ListAllGenericData("gridgenerator"));
+        return new JObject() { ["data"] = JArray.FromObject(data.ToArray()) };
     }
 
     public class GridCallData
     {
-        public List<string> Replacements = new();
+        public List<string> Replacements = [];
     }
 
     public class StableSwarmUIGridData
     {
-        public List<Task> Rendering = new();
+        public List<Task> Rendering = [];
 
         public LockObject UpdateLock = new();
 
@@ -197,11 +269,19 @@ public class GridGeneratorExtension : Extension
 
         public Session Session;
 
+        public int MaxSimul;
+
         public Session.GenClaim Claim;
 
         public JObject ErrorOut;
 
         public AsyncAutoResetEvent Signal = new(false);
+
+        public ConcurrentDictionary<string, Image> GeneratedOutputs = new();
+
+        public bool ContinueOnError = false;
+
+        public bool ShowOutputs = true;
 
         public Task[] GetActive()
         {
@@ -256,7 +336,20 @@ public class GridGeneratorExtension : Extension
         return new JObject() { ["exists"] = exists };
     }
 
-    public async Task<JObject> GridGenRun(WebSocket socket, Session session, JObject raw, string outputFolderName, bool doOverwrite, bool fastSkip, bool generatePage, bool publishGenMetadata, bool dryRun, bool weightOrder)
+    public static FontCollection MainFontCollection;
+    public static ConcurrentDictionary<float, Font> Fonts = new();
+
+    public static Font GetFont(float sizeMult)
+    {
+        if (MainFontCollection is null)
+        {
+            MainFontCollection = new();
+            MainFontCollection.Add("src/wwwroot/fonts/unifont-12.0.01.woff2");
+        }
+        return Fonts.GetOrCreate(sizeMult, () => MainFontCollection.Families.First().CreateFont(16 * sizeMult, FontStyle.Bold));
+    }
+
+    public async Task<JObject> GridGenRun(WebSocket socket, Session session, JObject raw, string outputFolderName, bool doOverwrite, bool fastSkip, bool generatePage, bool publishGenMetadata, bool dryRun, bool weightOrder, string outputType, bool continueOnError, bool showOutputs)
     {
         using Session.GenClaim claim = session.Claim(gens: 1);
         T2IParamInput baseParams;
@@ -274,12 +367,17 @@ public class GridGeneratorExtension : Extension
         {
             await socket.SendJson(BasicAPIFeatures.GetCurrentStatusRaw(session), API.WebsocketTimeout);
         }
+        baseParams.Remove(T2IParamTypes.BatchSize);
+        baseParams.Remove(T2IParamTypes.Images);
+        baseParams.Remove(T2IParamTypes.SaveIntermediateImages);
         await sendStatus();
-        StableSwarmUIGridData data = new() { Session = session, Claim = claim };
+        StableSwarmUIGridData data = new() { Session = session, Claim = claim, MaxSimul = session.User.Restrictions.CalcMaxT2ISimultaneous, ContinueOnError = continueOnError, ShowOutputs = showOutputs };
         Grid grid = null;
         try
         {
-            Task mainRun = Task.Run(() => grid = Run(baseParams, raw["gridAxes"], data, null, session.User.OutputDirectory, "Output", outputFolderName, doOverwrite, fastSkip, generatePage, publishGenMetadata, dryRun, weightOrder));
+            string ext = Image.ImageFormatToExtension(session.User.Settings.FileFormat.ImageFormat);
+            string urlBase = Program.ServerSettings.Paths.AppendUserNameToOutputPath ? $"View/{session.User.UserID}" : "Output";
+            Task mainRun = Task.Run(() => grid = Run(baseParams, raw["gridAxes"], data, null, session.User.OutputDirectory, urlBase, outputFolderName, doOverwrite, fastSkip, generatePage, publishGenMetadata, dryRun, weightOrder, outputType, ext, () => claim.ShouldCancel));
             while (!mainRun.IsCompleted || data.GetActive().Any() || data.Generated.Any())
             {
                 await data.Signal.WaitAsync(TimeSpan.FromSeconds(1));
@@ -293,6 +391,115 @@ public class GridGeneratorExtension : Extension
             {
                 throw mainRun.Exception;
             }
+            if (grid.OutputType == Grid.OutputyTypeEnum.GRID_IMAGE && grid.Axes.Count <= 3)
+            {
+                (string, string) proc(AxisValue val) => (val.Title, T2IParamTypes.CleanNameGeneric(val.Key));
+                List<(string, string)> xAxis = grid.Axes[0].Values.Where(v => !v.Skip).Select(proc).ToList();
+                List<(string, string)> yAxis = grid.Axes.Count > 1 ? grid.Axes[1].Values.Where(v => !v.Skip).Select(proc).ToList() : [(null, null)];
+                List<(string, string)> y2Axis = grid.Axes.Count > 2 ? grid.Axes[2].Values.Where(v => !v.Skip).Select(proc).ToList() : [(null, null)];
+                int maxWidth = data.GeneratedOutputs.Max(x => x.Value.ToIS.Width);
+                int maxHeight = data.GeneratedOutputs.Max(x => x.Value.ToIS.Height);
+                Font font = GetFont(1);
+                TextOptions options = new(font);
+                FontRectangle rect = TextMeasurer.MeasureSize("ABCdefg Word Prefix", options);
+                int textWidth = (int)Math.Ceiling(rect.Width);
+                int rawTextHeight = (int)Math.Ceiling(rect.Height);
+                int textHeight = rawTextHeight * 2;
+                int totalWidth = maxWidth * xAxis.Count + textWidth;
+                int totalHeight = maxHeight * (yAxis.Count * y2Axis.Count) + textHeight * y2Axis.Count;
+                Logs.Info($"Will generate grid image of size {totalWidth}x{totalHeight}");
+                ISImageRGBA gridImg = new(totalWidth, totalHeight);
+                gridImg.Mutate(m =>
+                {
+                    Brush brush = new SolidBrush(Color.Black);
+                    void DrawTextAutoScale(string text, float x, float y, float width, float height)
+                    {
+                        RichTextOptions rto = new(font) { WrappingLength = width, Origin = new(x, y) };
+                        float lines = height / rawTextHeight;
+                        FontRectangle measured = TextMeasurer.MeasureSize(text, options);
+                        Logs.Verbose($"Measured text '{text}' as {measured.Width}x{measured.Height} in {width}x{height} with {lines} lines");
+                        if (measured.Width < width * lines * 0.5)
+                        {
+                            rto.Font = GetFont(2);
+                        }
+                        else if (measured.Width > width * lines * 2)
+                        {
+                            rto.Font = GetFont(0.5f);
+                        }
+                        else if (measured.Width > width * lines)
+                        {
+                            rto.Font = GetFont(0.75f);
+                        }
+                        m.DrawText(rto, text, brush);
+                    }
+                    m.Fill(Color.White);
+                    int xIndex = 0;
+                    float yIndex = 0;
+                    foreach ((string x, _) in xAxis)
+                    {
+                        DrawTextAutoScale(x, xIndex * maxWidth + textWidth, 0, maxWidth, textHeight);
+                        xIndex++;
+                    }
+                    foreach ((string y2, _) in y2Axis)
+                    {
+                        if (y2 is not null)
+                        {
+                            DrawTextAutoScale(y2, 0, yIndex * maxHeight + textHeight, textWidth, maxHeight);
+                            yIndex += textHeight / (float)maxHeight;
+                        }
+                        foreach ((string y, _) in yAxis)
+                        {
+                            if (y is not null)
+                            {
+                                DrawTextAutoScale(y, 0, yIndex * maxHeight + textHeight * 2, textWidth, maxHeight);
+                            }
+                            yIndex++;
+                        }
+                    }
+                    yIndex = 0;
+                    foreach ((_, string y2) in y2Axis)
+                    {
+                        if (y2 is not null)
+                        {
+                            yIndex += textHeight / (float)maxHeight;
+                        }
+                        foreach ((_, string y) in yAxis)
+                        {
+                            xIndex = 0;
+                            foreach ((_, string x) in xAxis)
+                            {
+                                string imgPath = x;
+                                if (y is not null)
+                                {
+                                    imgPath = $"{imgPath}/{y}";
+                                    if (y2 is not null)
+                                    {
+                                        imgPath = $"{imgPath}/{y2}";
+                                    }
+                                }
+                                ISImage img = data.GeneratedOutputs[imgPath].ToIS;
+                                m.DrawImage(img, new Point(xIndex * maxWidth + textWidth, (int)(yIndex * maxHeight + textHeight)), 1);
+                                xIndex++;
+                            }
+                            yIndex++;
+                        }
+                    }
+                });
+                Logs.Info("Generated, saving...");
+                Image outImg = new(gridImg);
+                int batchId = xAxis.Count * yAxis.Count * y2Axis.Count;
+                Logs.Verbose("Apply metadata...");
+                (outImg, string metadata) = session.ApplyMetadata(outImg, grid.InitialParams, batchId);
+                Logs.Verbose("Metadata applied, save to file...");
+                (string url, string filePath) = grid.InitialParams.Get(T2IParamTypes.DoNotSave, false) ? (data.Session.GetImageB64(outImg), null) : data.Session.SaveImage(outImg, batchId, grid.InitialParams, metadata);
+                if (url == "ERROR")
+                {
+                    data.ErrorOut = new JObject() { ["error"] = $"Server failed to save an image." };
+                    throw new InvalidOperationException();
+                }
+                Logs.Verbose("Saved to file, send over websocket...");
+                await socket.SendJson(new JObject() { ["image"] = url, ["batch_index"] = $"{batchId}", ["metadata"] = string.IsNullOrWhiteSpace(metadata) ? null : metadata }, API.WebsocketTimeout);
+            }
         }
         catch (Exception ex)
         {
@@ -301,7 +508,10 @@ public class GridGeneratorExtension : Extension
                 Volatile.Write(ref data.ErrorOut, ExToError(ex));
             }
         }
-        PostClean(session.User.OutputDirectory, outputFolderName);
+        if (grid is not null && grid.OutputType == Grid.OutputyTypeEnum.WEB_PAGE)
+        {
+            PostClean(session.User.OutputDirectory, outputFolderName);
+        }
         Task faulted = data.Rendering.FirstOrDefault(t => t.IsFaulted);
         JObject err = Volatile.Read(ref data.ErrorOut);
         if (faulted is not null && err is null)

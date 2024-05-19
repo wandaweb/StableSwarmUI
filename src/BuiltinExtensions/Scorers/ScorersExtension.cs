@@ -15,7 +15,7 @@ namespace StableSwarmUI.Builtin_ScorersExtension;
 
 public class ScorersExtension : Extension
 {
-    public static string[] ScoringEngines = new string[] { "pickscore", "schuhmann_clip_plus_mlp" };
+    public static string[] ScoringEngines = ["pickscore", "schuhmann_clip_plus_mlp"];
 
     public static T2IRegisteredParam<List<string>> AutomaticScorer;
 
@@ -31,14 +31,14 @@ public class ScorersExtension : Extension
         T2IEngine.PostBatchEvent += PostBatchEvent;
         T2IParamGroup scoreGroup = new("Scoring", Toggles: true, IsAdvanced: true, Open: false);
         AutomaticScorer = T2IParamTypes.Register<List<string>>(new("Automatic Scorer", "Scoring engine(s) to use when scoring this image. Multiple scorers can be used and will be averaged together. Scores are saved in image metadata.",
-                       "schuhmann_clip_plus_mlp", Group: scoreGroup, GetValues: (_) => ScoringEngines.ToList()
+                       "schuhmann_clip_plus_mlp", Group: scoreGroup, GetValues: (_) => [.. ScoringEngines]
                        ));
         ScoreMustExceed = T2IParamTypes.Register<double>(new("Score Must Exceed", "Only keep images with a generated score above this minimum.",
-                       "0.5", Min: 0, Max: 1, Step: 0.1, Toggleable: true, Group: scoreGroup, Examples: new[] { "0.25", "0.5", "0.75", "0.9" }
+                       "0.5", Min: 0, Max: 1, Step: 0.1, Toggleable: true, Group: scoreGroup, Examples: ["0.25", "0.5", "0.75", "0.9"]
                        ));
         TakeBestNScore = T2IParamTypes.Register<int>(new("Take Best N Score", "Only keep the best *this many* images in a batch based on scoring."
                         + "\n(For example, if batch size = 8, and this value = 2, then 8 images will generate and will be scored, and the 2 best will be kept and the other 6 discarded.)",
-                       "1", Min: 1, Max: 100, Step: 1, Toggleable: true, Group: scoreGroup, Examples: new[] { "1", "2", "3" }
+                       "1", Min: 1, Max: 100, Step: 1, Toggleable: true, Group: scoreGroup, Examples: ["1", "2", "3"]
                        ));
     }
 
@@ -57,7 +57,7 @@ public class ScorersExtension : Extension
         }
     }
 
-    public HttpClient WebClient;
+    public static HttpClient WebClient;
 
     public int Port;
 
@@ -70,6 +70,10 @@ public class ScorersExtension : Extension
     /// <summary>Does not return until the backend process is ready.</summary>
     public void EnsureActive()
     {
+        if (!Directory.Exists($"{FilePath}/venv"))
+        {
+            throw new InvalidOperationException("Scoring parameter is enabled, but Scorers extension is not installed.\nThe scorers extension is experimental, you'll probably want to just uncheck the parameter.");
+        }
         while (Status == BackendStatus.LOADING)
         {
             Task.Delay(TimeSpan.FromSeconds(0.5)).Wait(Program.GlobalProgramCancel);
@@ -80,12 +84,12 @@ public class ScorersExtension : Extension
             {
                 return;
             }
-            WebClient = NetworkBackendUtils.MakeHttpClient();
+            WebClient ??= NetworkBackendUtils.MakeHttpClient();
             async Task<bool> Check(bool _)
             {
                 try
                 {
-                    if (await DoPost("API/Ping", new()) != null)
+                    if (await DoPost("API/Ping", []) != null)
                     {
                         Status = BackendStatus.RUNNING;
                     }
@@ -96,7 +100,7 @@ public class ScorersExtension : Extension
                     return false;
                 }
             }
-            NetworkBackendUtils.DoSelfStart(FilePath + "scorer_engine.py", "ScorersExtension", 0, "{PORT}", s => Status = s, Check, (p, r) => { Port = p; RunningProcess = r; }, () => Status, a => ShutdownEvent += a).Wait();
+            NetworkBackendUtils.DoSelfStart(FilePath + "scorer_engine.py", "ScorersExtension", "scorersextension", 0, "{PORT}", s => Status = s, Check, (p, r) => { Port = p; RunningProcess = r; }, () => Status, a => ShutdownEvent += a).Wait();
         }
     }
 
@@ -127,7 +131,7 @@ public class ScorersExtension : Extension
             return;
         }
         float scoreAccum = 0;
-        Dictionary<string, object> scores = new();
+        Dictionary<string, object> scores = [];
         foreach (string scorer in scorers)
         {
             if (!ScoringEngines.Contains(scorer))
@@ -161,8 +165,8 @@ public class ScorersExtension : Extension
             Logs.Debug($"Scorers: Limited to {bestN} images but only found {p.Images.Length} to scan, so ignoring");
             return;
         }
-        float[] scores = p.Images.Select(i => i?.Image?.GetSUIMetadata()?["scoring"]?["average"]?.Value<float>() ?? 0).ToArray();
-        float[] sorted = scores.OrderDescending().ToArray();
+        float[] scores = p.Images.Select(i => i?.Img?.GetSUIMetadata()?["scoring"]?["average"]?.Value<float>() ?? 0).ToArray();
+        float[] sorted = [.. scores.OrderDescending()];
         float cutoff = sorted[bestN - 1];
         Logs.Debug($"Scorers: will cutoff to {bestN} images with score {cutoff} or above");
         for (int i = 0; i < p.Images.Length; i++)

@@ -7,6 +7,7 @@ using ISImage = SixLabors.ImageSharp.Image;
 using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp.Processing;
 using FreneticUtilities.FreneticExtensions;
+using SixLabors.ImageSharp.Formats.Png;
 
 /// <summary>Helper to represent an image file cleanly and quickly.</summary>
 public class Image
@@ -68,7 +69,7 @@ public class Image
         }
         else if (data.Length == 0)
         {
-            throw new ArgumentException("Data is empty!", nameof(data));
+              throw new ArgumentException("Data is empty!", nameof(data));
         }
         ImageData = data;
     }
@@ -114,16 +115,27 @@ public class Image
     }
 
     /// <summary>Returns a metadata-format of the image.</summary>
-    public string ToMetadataFormat()
+    public Image ToMetadataJpg()
     {
         if (Type != ImageType.IMAGE)
         {
-            return AsDataString();
+            return null;
         }
         ISImage img = ToIS;
         float factor = 256f / Math.Min(img.Width, img.Height);
         img.Mutate(i => i.Resize((int)(img.Width * factor), (int)(img.Height * factor)));
-        return "data:image/jpeg;base64," + new Image(ISImgToJpgBytes(img), Type, "jpg").AsBase64;
+        return new Image(ISImgToJpgBytes(img), Type, "jpg");
+    }
+
+    /// <summary>Returns a metadata-format of the image.</summary>
+    public string ToMetadataFormat()
+    {
+        Image conv = ToMetadataJpg();
+        if (conv is null)
+        {
+            return AsDataString();
+        }
+        return "data:image/jpeg;base64," + conv.AsBase64;
     }
 
     /// <summary>Resizes the given image directly and returns a png formatted copy of it.</summary>
@@ -170,9 +182,19 @@ public class Image
     {
         try
         {
-            if (ToIS.Metadata?.ExifProfile?.TryGetValue(ExifTag.Model, out var data) ?? false)
+            ISImage img = ToIS;
+            string pngMetadata = img.Metadata?.GetPngMetadata()?.TextData?.FirstOrDefault(t => t.Keyword.ToLowerFast() == "parameters").Value;
+            if (pngMetadata is not null)
+            {
+                return pngMetadata;
+            }
+            if (img.Metadata?.ExifProfile?.TryGetValue(ExifTag.Model, out var data) ?? false)
             {
                 return data.Value;
+            }
+            if (img.Metadata?.ExifProfile?.TryGetValue(ExifTag.UserComment, out var data2) ?? false)
+            {
+                return data2.Value.Text;
             }
         }
         catch (ArgumentNullException ex)
@@ -189,6 +211,18 @@ public class Image
         return GetMetadata()?.ParseToJson()?["sui_image_params"]?.Value<JObject>();
     }
 
+    public static string ImageFormatToExtension(string format)
+    {
+        return format switch
+        {
+            "PNG" => "png",
+            "JPG" => "jpg",
+            "JPG90" => "jpg",
+            "JPG75" => "jpg",
+            _ => throw new ArgumentException("Unknown format: " + format, nameof(format)),
+        };
+    }
+
     /// <summary>Converts an image to the specified format, and the specific metadata text.</summary>
     public Image ConvertTo(string format, string metadata = null, int dpi = 0)
     {
@@ -200,10 +234,6 @@ public class Image
         ISImage img = ToIS;
         img.Metadata.XmpProfile = null;
         ExifProfile prof = new();
-        if (metadata is not null)
-        {
-            prof.SetValue(ExifTag.Model, metadata); // TODO: More appropriate metadata method?
-        }
         if (dpi > 0)
         {
             prof.SetValue(ExifTag.XResolution, new Rational((uint)dpi, 1));
@@ -212,12 +242,24 @@ public class Image
             img.Metadata.HorizontalResolution = dpi;
             img.Metadata.VerticalResolution = dpi;
         }
+        if (metadata is not null)
+        {
+            if (format == "PNG")
+            {
+                img.Metadata.GetPngMetadata().TextData.Add(new("parameters", metadata, "", ""));
+            }
+            else
+            {
+                prof.SetValue(ExifTag.UserComment, metadata);
+            }
+        }
         img.Metadata.ExifProfile = prof;
         string ext = "jpg";
         switch (format)
         {
             case "PNG":
-                img.SaveAsPng(ms);
+                PngEncoder encoder = new() { TextCompressionThreshold = int.MaxValue };
+                img.SaveAsPng(ms, encoder);
                 ext = "png";
                 break;
             case "JPG":
@@ -228,12 +270,6 @@ public class Image
                 break;
             case "JPG75":
                 img.SaveAsJpeg(ms, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder() { Quality = 75 });
-                break;
-            case "GIF":
-                img.SaveAsGif(ms, new SixLabors.ImageSharp.Formats.Gif.GifEncoder() { });
-                break;
-            case "WEBP":
-                img.SaveAsWebp(ms, new SixLabors.ImageSharp.Formats.Webp.WebpEncoder() { });
                 break;
             // TODO: webp, etc. with appropriate quality handlers
             default:

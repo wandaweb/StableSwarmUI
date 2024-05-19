@@ -63,7 +63,7 @@ public class StabilityAPIBackend : AbstractT2IBackend
 
     public override Task Shutdown()
     {
-        // Nothing to do.
+        NetworkBackendUtils.ClearOldHttpClient(WebClient);
         return Task.CompletedTask;
     }
 
@@ -117,7 +117,7 @@ public class StabilityAPIBackend : AbstractT2IBackend
         {
             // TODO: img2img
         }
-        JArray prompts = new();
+        JArray prompts = [];
         if (!string.IsNullOrWhiteSpace(user_input.Get(T2IParamTypes.Prompt)))
         {
             prompts.Add(new JObject()
@@ -170,7 +170,7 @@ public class StabilityAPIBackend : AbstractT2IBackend
             {
                 throw new InvalidDataException($"StabilityAPI refused to generate: {message}");
             }
-            List<Image> images = new();
+            List<Image> images = [];
             foreach (JObject img in response["artifacts"].Cast<JObject>())
             {
                 if (img["finishReason"].ToString() == "ERROR")
@@ -182,8 +182,8 @@ public class StabilityAPIBackend : AbstractT2IBackend
                     images.Add(new(img["base64"].ToString(), Image.ImageType.IMAGE, "png"));
                 }
             }
-            _ = Task.Run(() => UpdateBalance().Wait());
-            return images.ToArray();
+            _ = Utilities.RunCheckedTask(() => UpdateBalance().Wait());
+            return [.. images];
         }
         catch (Exception ex)
         {

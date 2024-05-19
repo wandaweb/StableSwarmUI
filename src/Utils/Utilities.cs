@@ -17,14 +17,54 @@ using System;
 using System.Net;
 using System.Diagnostics;
 using StableSwarmUI.Text2Image;
+using System.Net.Sockets;
 
 namespace StableSwarmUI.Utils;
 
 /// <summary>General utilities holder.</summary>
 public static class Utilities
 {
+    /// <summary>Preps various utilities during server start.</summary>
+    public static void PrepUtils()
+    {
+        ThreadPool.SetMinThreads(512, 512);
+        Program.TickIsGeneratingEvent += () => WebhookManager.WaitUntilCanStartGenerating().Wait();
+        Program.TickNoGenerationsEvent += () => WebhookManager.TickNoGenerations().Wait();
+        Program.TickIsGeneratingEvent += MemCleaner.TickIsGenerating;
+        Program.TickNoGenerationsEvent += MemCleaner.TickNoGenerations;
+        Program.TickEvent += SystemStatusMonitor.Tick;
+        new Thread(TickLoop).Start();
+    }
+
+    /// <summary>Internal tick loop thread main method.</summary>
+    public static void TickLoop()
+    {
+        while (!Program.GlobalProgramCancel.IsCancellationRequested)
+        {
+            try
+            {
+                Task.Delay(TimeSpan.FromSeconds(1), Program.GlobalProgramCancel).Wait(Program.GlobalProgramCancel);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            try
+            {
+                Program.TickEvent?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Logs.Error($"Tick loop encountered exception: {ex}");
+            }
+        }
+    }
+
     /// <summary>StableSwarmUI's current version.</summary>
     public static readonly string Version = Assembly.GetEntryAssembly()?.GetName().Version.ToString();
+
+    /// <summary>Current git commit (if known -- empty if unknown).</summary>
+    public static string GitCommit = "";
 
     /// <summary>Used by linked pages to prevent cache errors when data changes.</summary>
     public static string VaryID = Version;
@@ -32,13 +72,21 @@ public static class Utilities
     /// <summary>A unique ID for this server, used to make sure we don't ever form a circular swarm connection path.</summary>
     public static Guid LoopPreventionID = Guid.NewGuid();
 
-    /// <summary>Matcher for characters banned or specialcased by Windows or other OS's.</summary>
-    public static AsciiMatcher FilePathForbidden = new(c => c < 32 || "<>:\"\\|?*~&@;".Contains(c));
+    /// <summary>Matcher for ASCII control codes (including newlines, etc).</summary>
+    public static AsciiMatcher ControlCodesMatcher = new(c => c < 32);
 
-    public static HashSet<string> ReservedFilenames = new() { "con", "prn", "aux", "nul" };
+    /// <summary>Matcher for characters banned or specialcased by Windows or other OS's.</summary>
+    public static AsciiMatcher FilePathForbidden = new(c => c < 32 || "<>:\"\\|?*~&@;#$^".Contains(c));
+
+    public static HashSet<string> ReservedFilenames = ["con", "prn", "aux", "nul"];
 
     static Utilities()
     {
+        if (File.Exists("./.git/refs/heads/master"))
+        {
+            GitCommit = File.ReadAllText("./.git/refs/heads/master").Trim()[0..8];
+            VaryID += ".GIT-" + GitCommit;
+        }
         for (int i = 0; i <= 9; i++)
         {
             ReservedFilenames.Add($"com{i}");
@@ -55,7 +103,7 @@ public static class Utilities
             name = name.Replace("//", "/");
         }
         name = name.Trim();
-        string[] parts = name.Split('/');
+        string[] parts = name.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         for (int i = 0; i < parts.Length; i++)
         {
             if (ReservedFilenames.Contains(parts[i].ToLowerFast()))
@@ -77,6 +125,34 @@ public static class Utilities
             long timeNow = Environment.TickCount64;
             Logs.Debug($"[Load Time] {part} took {(timeNow - LastTime) / 1000.0:0.##}s ({(timeNow - StartTime) / 1000.0:0.##}s from start)");
             LastTime = timeNow;
+        }
+    }
+
+    /// <summary>Mini-utility class to debug timings.</summary>
+    public class ChunkedTimer
+    {
+        public long StartTime = Environment.TickCount64;
+        public long LastTime = Environment.TickCount64;
+
+        public Dictionary<string, (long, long)> Times = [];
+
+        public void Reset()
+        {
+            StartTime = Environment.TickCount64;
+            LastTime = Environment.TickCount64;
+        }
+
+        public void Mark(string part)
+        {
+            long timeNow = Environment.TickCount64;
+            Times[part] = (timeNow - LastTime, timeNow - StartTime);
+            LastTime = timeNow;
+        }
+
+        public void Debug(string extra)
+        {
+            string content = Times.Select(kvp => $"{kvp.Key}: {kvp.Value.Item1 / 1000.0:0.##}s ({kvp.Value.Item2 / 1000.0:0.##}s from start)").JoinString(", ");
+            Logs.Debug($"[ChunkedTimer] {content} {extra}");
         }
     }
 
@@ -200,12 +276,34 @@ public static class Utilities
     /// <summary>Converts the JSON data to predictable basic data.</summary>
     public static Dictionary<string, object> ToBasicObject(this JObject obj)
     {
-        Dictionary<string, object> result = new();
+        Dictionary<string, object> result = [];
         foreach ((string key, JToken val) in obj)
         {
             result[key] = val.ToBasicObject();
         }
         return result;
+    }
+
+    /// <summary>Sorts the data in a <see cref="JObject"/> by the given key processing function.</summary>
+    public static JObject SortByKey<TSortable>(this JObject obj, Func<string, TSortable> sort)
+    {
+        return JObject.FromObject(obj.Properties().OrderBy(p => sort(p.Name)).ToDictionary(p => p.Name, p => p.Value));
+    }
+
+    /// <summary>Gives a clean standard 4-space serialize of this <see cref="JObject"/>.</summary>
+    public static string SerializeClean(this JObject jobj)
+    {
+        // Why is JSON.NET's API so weirdly splintered? So many different fundamental routes needed to get access to basic settings.
+        using StringWriter sw = new();
+        using JsonTextWriter jw = new(sw);
+        jw.Formatting = Formatting.Indented;
+        jw.IndentChar = ' ';
+        jw.Indentation = 4;
+        JsonSerializer serializer = new();
+        serializer.Serialize(jw, jobj);
+        jw.Flush();
+        return sw.ToString() + Environment.NewLine;
+
     }
 
     public static async Task YieldJsonOutput(this HttpContext context, WebSocket socket, int status, JObject obj)
@@ -216,9 +314,12 @@ public static class Utilities
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, TimedCancel(TimeSpan.FromMinutes(1)));
             return;
         }
+        byte[] resp = obj.ToString(Formatting.None).EncodeUTF8();
         context.Response.ContentType = "application/json";
         context.Response.StatusCode = status;
-        await context.Response.WriteAsync(obj.ToString(Formatting.None));
+        context.Response.ContentLength = resp.Length;
+        context.Response.Headers.CacheControl = "no-store";
+        await context.Response.BodyWriter.WriteAsync(resp, Program.GlobalProgramCancel);
         await context.Response.CompleteAsync();
     }
 
@@ -240,9 +341,16 @@ public static class Utilities
         return JObject.Parse("{ \"value\": \"" + input + "\" }")["value"].ToString();
     }
 
+    /// <summary>Accelerator trick to speed up <see cref="EscapeJsonString(string)"/>.</summary>
+    public static AsciiMatcher NeedsJsonEscapeMatcher = new(c => c < 32 || "\\\"\n\r\b\t\f/".Contains(c, StringComparison.Ordinal));
+
     /// <summary>Takes a string that may contain unpredictable content, and escapes it to fit safely within a JSON string section.</summary>
     public static string EscapeJsonString(string input)
     {
+        if (!NeedsJsonEscapeMatcher.ContainsAnyMatch(input))
+        {
+            return input;
+        }
         string cleaned = input.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\b", "\\b").Replace("\t", "\\t").Replace("\f", "\\f").Replace("/", "\\/");
         StringBuilder output = new(input.Length);
         foreach (char c in cleaned)
@@ -266,6 +374,7 @@ public static class Utilities
             { "png", "image/png" },
             { "jpg", "image/jpeg" },
             { "jpeg", "image/jpeg" },
+            { "webp", "image/webp" },
             { "gif", "image/gif" },
             { "ico", "image/x-icon" },
             { "svg", "image/svg+xml" },
@@ -285,6 +394,7 @@ public static class Utilities
             { "xml", "text/xml" },
             { "mp4", "video/mp4" },
             { "mpeg", "video/mpeg" },
+            { "mov", "video/quicktime" },
             { "webm", "video/webm" }
         };
 
@@ -320,6 +430,7 @@ public static class Utilities
         return result;
     }
 
+    /// <summary>Runs a task async with an exception check.</summary>
     public static Task RunCheckedTask(Action action)
     {
         return Task.Run(() =>
@@ -386,26 +497,32 @@ public static class Utilities
         }
     }
 
+    /// <summary>Reusable general web client.</summary>
+    public static HttpClient UtilWebClient = NetworkBackendUtils.MakeHttpClient();
+
     /// <summary>Downloads a file from a given URL and saves it to a given filepath.</summary>
-    public static async Task DownloadFile(string url, string filepath, Action<long> progressUpdate)
+    public static async Task DownloadFile(string url, string filepath, Action<long, long> progressUpdate)
     {
         using FileStream writer = File.OpenWrite(filepath);
-        HttpClient client = NetworkBackendUtils.MakeHttpClient();
-        using Stream dlStream = await client.GetStreamAsync(url, Program.GlobalProgramCancel);
-        byte[] buffer = new byte[1024 * 1024 * 64]; // 64 megabytes, just grab as big a chunk as we can
+        using HttpResponseMessage response = await UtilWebClient.SendAsync(new HttpRequestMessage(HttpMethod.Get, url), HttpCompletionOption.ResponseHeadersRead, Program.GlobalProgramCancel);
+        long length = response.Content.Headers.ContentLength ?? 0;
+        byte[] buffer = new byte[Math.Min(length + 1024, 1024 * 1024 * 64)]; // up to 64 megabytes, just grab as big a chunk as we can at a time
         long progress = 0;
         long lastUpdate = Environment.TickCount64;
+        using Stream dlStream = await response.Content.ReadAsStreamAsync();
+        progressUpdate?.Invoke(0, length);
         while (true)
         {
             int read = await dlStream.ReadAsync(buffer, Program.GlobalProgramCancel);
             if (read <= 0)
             {
+                progressUpdate?.Invoke(progress, length);
                 return;
             }
             progress += read;
             if (Environment.TickCount64 - lastUpdate > 1000)
             {
-                progressUpdate?.Invoke(progress);
+                progressUpdate?.Invoke(progress, length);
                 lastUpdate = Environment.TickCount64;
             }
             await writer.WriteAsync(buffer.AsMemory(0, read), Program.GlobalProgramCancel);
@@ -437,7 +554,7 @@ public static class Utilities
     /// <summary>Smart clean combination of two paths in a way that allows B to be an absolute path.</summary>
     public static string CombinePathWithAbsolute(string a, string b)
     {
-        if (b.StartsWith("/") || (b.Length > 2 && b[1] == ':'))
+        if (b.StartsWith('/') || (b.Length > 2 && b[1] == ':') || b.StartsWith("\\\\"))
         {
             return b;
         }
@@ -447,7 +564,12 @@ public static class Utilities
         {
             return $"{a}{b}";
         }
-        return $"{a}{separator}{b}";
+        string result = $"{a}{separator}{b}";
+        while (result.Contains($"{separator}{separator}"))
+        {
+            result = result.Replace($"{separator}{separator}", $"{separator}");
+        }
+        return result;
     }
 
     /// <summary>Rounds a number to the given precision.</summary>
@@ -475,7 +597,7 @@ public static class Utilities
     }
 
     /// <summary>Gets a dense but trimmed string representation of JSON data, for debugging.</summary>
-    public static string ToDenseDebugString(this JToken jData, int partCharLimit = 256, string spaces = "")
+    public static string ToDenseDebugString(this JToken jData, bool noSpacing = false, int partCharLimit = 256, string spaces = "")
     {
         if (jData is null)
         {
@@ -484,8 +606,8 @@ public static class Utilities
         if (jData is JObject jObj)
         {
             string subSpaces = spaces + "    ";
-            string resultStr = jObj.Properties().Select(v => $"\"{v.Name}\": {v.Value.ToDenseDebugString(partCharLimit, subSpaces)}").JoinString(", ");
-            if (resultStr.Length <= 50)
+            string resultStr = jObj.Properties().Select(v => $"\"{v.Name}\": {v.Value.ToDenseDebugString(noSpacing, partCharLimit, subSpaces)}").JoinString(", ");
+            if (resultStr.Length <= 50 || noSpacing)
             {
                 return "{ " + resultStr + " }";
             }
@@ -494,16 +616,16 @@ public static class Utilities
         else if (jData is JArray jArr)
         {
             string subSpaces = spaces + "    ";
-            string resultStr = jArr.Select(v => v.ToDenseDebugString(partCharLimit, subSpaces)).JoinString(", ");
+            string resultStr = jArr.Select(v => v.ToDenseDebugString(noSpacing, partCharLimit, subSpaces)).JoinString(", ");
             if (resultStr.Length == 0)
             {
                 return "[ ]";
             }
-            if (resultStr.Length <= 50)
+            if (resultStr.Length <= 50 || noSpacing)
             {
                 return $"[ {resultStr} ]";
             }
-            return $"[\n{subSpaces}[{resultStr}\n{spaces}]";
+            return $"[\n{subSpaces}{resultStr}\n{spaces}]";
         }
         else
         {
@@ -523,5 +645,93 @@ public static class Utilities
             val = val.Replace("\\", "\\\\").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t").Replace("\"", "\\\"");
             return $"\"{val}\"";
         }
+    }
+
+    /// <summary>Quick helper to nuke old pycaches, because python leaves them lying around and does not clean up after itself :(
+    /// Useful for removing old python folders that have been removed from git.</summary>
+    public static void RemoveBadPycacheFrom(string path)
+    {
+        try
+        {
+            string potentialCache = $"{path}/__pycache__/";
+            if (!Directory.Exists(potentialCache))
+            {
+                return;
+            }
+            string[] files = Directory.GetFileSystemEntries(potentialCache);
+            if (files.Any(f => !f.EndsWith(".pyc"))) // Safety backup: if this cache has non-pycache files, we can't safely delete it.
+            {
+                return;
+            }
+            foreach (string file in files)
+            {
+                File.Delete(file);
+            }
+            Directory.Delete(potentialCache);
+            if (Directory.EnumerateFileSystemEntries(path).IsEmpty())
+            {
+                Directory.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logs.Debug($"Failed to remove bad pycache from {path}: {ex}");
+        }
+    }
+
+    /// <summary>Tries to read the local IP address, if possible. Returns null if not found. Value may be wrong or misleading.</summary>
+    public static string GetLocalIPAddress()
+    {
+        IPHostEntry host = Dns.GetHostEntry(Dns.GetHostName());
+        List<string> result = [];
+        foreach (var ip in host.AddressList)
+        {
+            if (ip.AddressFamily == AddressFamily.InterNetwork && !$"{ip}".EndsWith(".1"))
+            {
+                result.Add($"http://{ip}:{Program.ServerSettings.Network.Port}");
+            }
+        }
+        if (result.Any())
+        {
+            return result.JoinString(", ");
+        }
+        return null;
+    }
+
+    /// <summary>Cause an immediate aggressive RAM cleanup.</summary>
+    public static void CleanRAM()
+    {
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+    }
+
+    public static string DotNetVersMissing = null;
+
+    /// <summary>Check if a dotnet version is installed, and, if not, show a log message and write to a utility flag.</summary>
+    public static void CheckDotNet(string vers)
+    {
+        Task.Run(() =>
+        {
+            try
+            {
+                Process p = Process.Start(new ProcessStartInfo("dotnet", "--list-sdks") { RedirectStandardOutput = true, UseShellExecute = false });
+                p.WaitForExit();
+                string output = p.StandardOutput.ReadToEnd();
+                if (!output.Contains($"{vers}.0."))
+                {
+                    void Warn()
+                    {
+                        Logs.Warning($"You do not seem to have DotNET {vers} installed - this will be required in a future version of StableSwarmUI.");
+                        Logs.Warning($"Please install DotNET SDK {vers}.0 from https://dotnet.microsoft.com/en-us/download/dotnet/{vers}.0");
+                    }
+                    DotNetVersMissing = vers;
+                    Warn();
+                    Task.Delay(TimeSpan.FromSeconds(2)).ContinueWith(_ => Warn());
+                }
+            }
+            catch (Exception ex)
+            {
+                Logs.Debug($"Failed to check dotnet version: {ex}");
+            }
+        });
     }
 }

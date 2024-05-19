@@ -16,11 +16,10 @@ function loadData() {
         // axis.id/title/description
         for (var val of axis.values) {
             // val.key/title/description/show
-            var clicktab = document.getElementById('clicktab_' + axis.id + '__' + val.key);
+            let clicktab = getNavValTab(axis.id, val.key);
             clicktab.addEventListener('click', fillTable);
             if (!val.show) {
-                document.getElementById('showval_' + axis.id + '__' + val.key).checked = false;
-                clicktab.classList.add('tab_hidden');
+                setShowVal(axis.id, val.key, false);
             }
         }
         for (var prefix of ['x_', 'y_', 'x2_', 'y2_']) {
@@ -43,6 +42,7 @@ function loadData() {
     document.getElementById('stickyLabels').checked = rawData.defaults.sticky_labels;
     document.getElementById('score_display').addEventListener('click', fillTable);
     document.getElementById('score_setting').style.display = typeof getScoreFor == 'undefined' ? 'none' : 'inline-block';
+    document.getElementById('pauseVideos').addEventListener('click', updatePauseVideos);
     updateStylesToMatchInputs();
     for (var axis of ['x', 'y', 'x2', 'y2']) {
         if (rawData.defaults[axis] != '') {
@@ -58,6 +58,19 @@ function loadData() {
     }
 }
 
+function updatePauseVideos() {
+    let doPause = document.getElementById('pauseVideos').checked;
+    for (let video of document.getElementsByTagName('video')) {
+        if (doPause) {
+            video.pause();
+        }
+        else {
+            video.play();
+        }
+    }
+    updateHash();
+}
+
 function getExtension(filePath) {
     if (filePath in file_extensions_alt) {
         return file_extensions_alt[filePath];
@@ -68,11 +81,14 @@ function getExtension(filePath) {
 /** External callable. */
 function fix_video(path) {
     let ext = getExtension(path);
-    if (ext != 'webm' && ext != 'mp4') {
-        return;
-    }
     let matches = document.querySelectorAll(`img[data-img_path="${path}"]`);
     for (let match of matches) {
+        if (ext != 'webm' && ext != 'mp4' && ext != 'mov') {
+            if (!match.src.endsWith(ext)) {
+                match.src = `${path}.${ext}`;
+            }
+            continue;
+        }
         if (match.tagName == 'VIDEO') {
             continue;
         }
@@ -80,6 +96,8 @@ function fix_video(path) {
         video.loop = true;
         video.muted = true;
         video.autoplay = true;
+        let doPause = document.getElementById('pauseVideos').checked;
+        video.paused = doPause;
         video.classList = match.classList;
         video.dataset.img_path = match.dataset.img_path;
         video.onclick = "doPopupFor(this)";
@@ -89,6 +107,9 @@ function fix_video(path) {
         source.type = `video/${ext}`;
         video.appendChild(source);
         match.parentElement.replaceChild(video, match);
+        if (doPause) {
+            video.pause();
+        }
     }
 }
 
@@ -218,7 +239,7 @@ window.addEventListener('keydown', function(kbevent) {
         var next = getNextAxis(Array.from(rawData.axes).reverse(), axisId);
         if (next != null) {
             var selectedKey = getSelectedValKey(next);
-            var swapToTab = this.document.getElementById(`clicktab_${next.id}__${selectedKey}`);
+            var swapToTab = getNavValTab(next.id, selectedKey);
             swapToTab.focus({ preventScroll: true });
         }
     }
@@ -226,7 +247,7 @@ window.addEventListener('keydown', function(kbevent) {
         var next = getNextAxis(rawData.axes, axisId);
         if (next != null) {
             var selectedKey = getSelectedValKey(next);
-            var swapToTab = this.document.getElementById(`clicktab_${next.id}__${selectedKey}`);
+            var swapToTab = getNavValTab(next.id, selectedKey);
             swapToTab.focus({ preventScroll: true });
         }
     }
@@ -251,6 +272,15 @@ function unescapeHtml(text) {
 
 function canShowVal(axis, val) {
     return document.getElementById(`showval_${axis}__${val}`).checked;
+}
+
+function setShowVal(axis, val, show) {
+    document.getElementById(`showval_${axis}__${val}`).checked = show;
+    getNavValTab(axis, val).classList.toggle('tab_hidden', !show);
+}
+
+function getNavValTab(axis, val) {
+    return document.getElementById(`clicktab_${axis}__${val}`);
 }
 
 function percentToRedGreen(percent) {
@@ -299,7 +329,7 @@ function getXAxisContent(x, y, xAxis, yval, x2Axis, x2val, y2Axis, y2val) {
         let actualUrl = slashed + '.' + ext;
         let id = scoreTrackCounter++;
         newContent += `<td id="td-img-${id}"><span></span>`;
-        if (ext == 'mp4' || ext == 'webm') {
+        if (ext == 'mp4' || ext == 'webm' || ext == 'mov') {
             newContent += `<video loop autoplay muted class="table_img" data-img_path="${slashed}" onclick="doPopupFor(this)" onerror="setImgPlaceholder(this)" alt="${actualUrl}"><source src="${actualUrl}" type="video/${ext}"></source></video>`;
         }
         else {
@@ -311,7 +341,8 @@ function getXAxisContent(x, y, xAxis, yval, x2Axis, x2val, y2Axis, y2val) {
             newScr = document.createElement('script');
             newScr.src = getMetadataScriptFor(slashed);
         }
-        if (scoreDisplay != 'None' && typeof getScoreFor != 'undefined') {
+        let doScores = scoreDisplay != 'None' && typeof getScoreFor != 'undefined';
+        if (doScores) {
             scoreUpdates.push(() => {
                 let score = getScoreFor(slashed);
                 if (score) {
@@ -336,16 +367,22 @@ function getXAxisContent(x, y, xAxis, yval, x2Axis, x2val, y2Axis, y2val) {
                     elem.firstChild.innerHTML = `<div style="position: relative; width: 0; height: 0"><div style="position: absolute; left: 0; z-index: 20;">${Math.round(score * 100)}%</div><div class="heatmapper" style="position: absolute; left: 0; width: 100px; height: 100px; z-index: 10; background-color: ${blockColor}"></div></div>`;
                 }
             });
-            if (newScr && typeof getScoreFor != 'undefined') {
-                newScr.onload = () => {
-                    setTimeout(() => {
-                        lastScoreBump = Date.now();
-                    }, 1);
-                    if (scoreBumpTracker == null) {
-                        scoreBumpTracker = setInterval(() => {
-                            if (Date.now() - lastScoreBump > 300) {
-                                clearInterval(scoreBumpTracker);
-                                scoreBumpTracker = null;
+        }
+        if (newScr != null) {
+            newScr.onload = () => {
+                setTimeout(() => {
+                    lastScoreBump = Date.now();
+                    let ext = file_extensions_alt[slashed];
+                    if (ext && !actualUrl.endsWith(ext)) {
+                        fix_video(slashed);
+                    }
+                }, 1);
+                if (scoreBumpTracker == null) {
+                    scoreBumpTracker = setInterval(() => {
+                        if (Date.now() - lastScoreBump > 300) {
+                            clearInterval(scoreBumpTracker);
+                            scoreBumpTracker = null;
+                            if (doScores) {
                                 scoreMin = 1;
                                 scoreMax = 0;
                                 for (let image of document.getElementsByClassName('table_img')) {
@@ -362,10 +399,10 @@ function getXAxisContent(x, y, xAxis, yval, x2Axis, x2val, y2Axis, y2val) {
                                 }
                                 updateScaling();
                             }
-                        }, 100);
-                    }
-                };
-            }
+                        }
+                    }, 100);
+                }
+            };
         }
         if (newScr) {
             scriptDump.appendChild(newScr);
@@ -529,16 +566,14 @@ function toggleShowAllAxis(axisId) {
         return canShowVal(axisId, val.key);
     });
     for (var val of axis.values) {
-        document.getElementById('showval_' + axisId + '__' + val.key).checked = !hide;
-        var element = document.getElementById('clicktab_' + axisId + '__' + val.key);
-        element.classList.toggle('tab_hidden', hide);
+        setShowVal(axisId, val.key, !hide);
     }
     fillTable();
 }
 
 function toggleShowVal(axis, val) {
     var show = canShowVal(axis, val);
-    var element = document.getElementById('clicktab_' + axis + '__' + val);
+    let element = getNavValTab(axis, val);
     element.classList.toggle('tab_hidden', !show);
     if (!show && element.classList.contains('active')) {
         var next = [...element.parentElement.parentElement.getElementsByClassName('nav-link')].filter(e => !e.classList.contains('tab_hidden'));
@@ -653,7 +688,7 @@ function doPopupFor(img) {
     }
     let params = escapeHtml(metaText).replaceAll('\n', '\n<br>');
     let text = 'Image: ' + img.alt + (params.length > 1 ? ', parameters: <br>' + params : '<br>(parameters hidden)');
-    modalElem.innerHTML = `<div class="modal-dialog" style="display:none">(click outside image to close)</div><div class="modal_inner_div"><img class="popup_modal_img" src="${img.src}"><br><div class="popup_modal_undertext">${text}</div>`;
+    modalElem.innerHTML = `<div class="modal-dialog" style="display:none">(click outside image to close)</div><div class="modal_inner_div"><img onclick="$('#image_info_modal').modal('hide')" class="popup_modal_img" src="${img.src}"><br><div class="popup_modal_undertext">${text}</div>`;
     $('#image_info_modal').modal('toggle');
 }
 
@@ -718,6 +753,7 @@ function makeImage(minRow = 0, doClear = true) {
     var rowData = [];
     var pad_x = 64, pad_y = 64;
     let count = 0;
+    let sizeMult = parseFloat(document.getElementById('makeimage_size').value.replaceAll('x', ''));
     for (var row of rows) {
         count++;
         if (count < minRow) {
@@ -725,8 +761,8 @@ function makeImage(minRow = 0, doClear = true) {
         }
         var images = Array.from(row.getElementsByTagName('img'));
         var real_images = images.filter(i => i.src != 'placeholder.png');
-        widest_width = Math.max(widest_width, ...real_images.map(i => i.naturalWidth));
-        var height = Math.max(...real_images.map(i => i.naturalHeight));
+        widest_width = Math.max(widest_width, ...real_images.map(i => i.naturalWidth * sizeMult));
+        var height = Math.max(...real_images.map(i => i.naturalHeight * sizeMult));
         var y = pad_y + total_height;
         if (total_height + height > 30000) { // 32,767 is max canvas size
             setTimeout(() => makeImage(count, false), 100);
@@ -861,7 +897,7 @@ function makeImage(minRow = 0, doClear = true) {
         var x = pad_x;
         for (var image of row.images) {
             if (image.src != 'placeholder.png') {
-                ctx.drawImage(image, x, row.y);
+                ctx.drawImage(image, x, row.y, image.naturalWidth * sizeMult, image.naturalHeight * sizeMult);
                 x += widest_width + 1;
             }
         }
@@ -962,7 +998,7 @@ function makeGif() {
 
 function updateHash() {
     var hash = `#auto-loc`;
-    for (let elem of ['showDescriptions', 'autoScaleImages', 'stickyNavigation', 'stickyLabels']) {
+    for (let elem of ['showDescriptions', 'autoScaleImages', 'stickyNavigation', 'stickyLabels', 'pauseVideos']) {
         hash += `,${document.getElementById(elem).checked}`;
     }
     for (let val of ['x', 'y', 'x2', 'y2']) {
@@ -971,6 +1007,13 @@ function updateHash() {
     for (let subAxis of rawData.axes) {
         hash += `,${encodeURIComponent(getSelectedValKey(subAxis))}`;
     }
+    for (let axis of rawData.axes) {
+        for (let value of axis.values) {
+            if (!canShowVal(axis.id, value.key)) {
+                hash += `&hide=${encodeURIComponent(axis.id)},${encodeURIComponent(value.key)}`;
+            }
+        }
+    }
     history.pushState(null, null, hash);
 }
 
@@ -978,8 +1021,16 @@ function applyHash(hash) {
     if (!hash) {
         return;
     }
-    let hashInputs = hash.substring(1).split(',');
-    let expectedLen = 1 + 4 + 4 + rawData.axes.length;
+    let params = hash.substring(1).split('&');
+    for (let hidden of params.slice(1)) {
+        let [action, value] = hidden.split('=');
+        if (action == 'hide') {
+            let [axis, val] = value.split(',');
+            setShowVal(axis, val, false);
+        }
+    }
+    let hashInputs = params[0].split(',');
+    let expectedLen = 1 + 5 + 4 + rawData.axes.length;
     if (hashInputs.length != expectedLen) {
         console.log(`Hash length mismatch: ${hashInputs.length} != ${expectedLen}, skipping value reload.`);
         return;
@@ -989,7 +1040,7 @@ function applyHash(hash) {
         return;
     }
     let index = 1;
-    for (let elem of ['showDescriptions', 'autoScaleImages', 'stickyNavigation', 'stickyLabels']) {
+    for (let elem of ['showDescriptions', 'autoScaleImages', 'stickyNavigation', 'stickyLabels', 'pauseVideos']) {
         document.getElementById(elem).checked = hashInputs[index++] == 'true';
     }
     for (let axis of ['x', 'y', 'x2', 'y2']) {
@@ -1002,8 +1053,8 @@ function applyHash(hash) {
         target.click();
     }
     for (let subAxis of rawData.axes) {
-        let id = 'clicktab_' + subAxis.id + '__' + decodeURIComponent(hashInputs[index++]);
-        let target = document.getElementById(id);
+        let val = decodeURIComponent(hashInputs[index++]);
+        let target = getNavValTab(subAxis.id, val);
         if (!target) {
             console.log(`Axis-value element not found: ${id}, skipping value reload.`);
             return;

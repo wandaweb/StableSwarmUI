@@ -11,7 +11,7 @@ public class PromptRegion
 
     public enum PartType
     {
-        Region, Object, Segment
+        Region, Object, Segment, ClearSegment
     }
 
     public class Part
@@ -29,7 +29,7 @@ public class PromptRegion
         public PartType Type;
     }
 
-    public List<Part> Parts = new();
+    public List<Part> Parts = [];
 
     public PromptRegion()
     {
@@ -37,7 +37,7 @@ public class PromptRegion
 
     public PromptRegion(string prompt)
     {
-        if (!prompt.Contains("<region:") && !prompt.Contains("<object:") && !prompt.Contains("<segment:"))
+        if (!prompt.Contains("<region:") && !prompt.Contains("<object:") && !prompt.Contains("<segment:") && !prompt.Contains("<clear:"))
         {
             GlobalPrompt = prompt;
             return;
@@ -66,6 +66,18 @@ public class PromptRegion
             if (prefix == "region")
             {
                 type = PartType.Region;
+                if (regionData == "end")
+                {
+                    GlobalPrompt += content;
+                    addMore = s => GlobalPrompt += s;
+                    continue;
+                }
+                if (regionData == "background")
+                {
+                    BackgroundPrompt += content;
+                    addMore = s => BackgroundPrompt += s;
+                    continue;
+                }
             }
             else if (prefix == "object")
             {
@@ -75,21 +87,13 @@ public class PromptRegion
             {
                 type = PartType.Segment;
             }
+            else if (prefix == "clear")
+            {
+                type = PartType.ClearSegment;
+            }
             else
             {
                 addMore($"<{piece}");
-                continue;
-            }
-            if (regionData == "end")
-            {
-                GlobalPrompt += content;
-                addMore = s => GlobalPrompt += s;
-                continue;
-            }
-            if (regionData == "background")
-            {
-                BackgroundPrompt += content;
-                addMore = s => BackgroundPrompt += s;
                 continue;
             }
             Part p = new()
@@ -98,7 +102,7 @@ public class PromptRegion
                 Type = type
             };
             string[] coords = regionData.Split(',');
-            if (type == PartType.Segment)
+            if (type == PartType.Segment || type == PartType.ClearSegment)
             {
                 p.DataText = regionData;
                 if (coords.Length > 1 && float.TryParse(coords[^1], out float x))
@@ -144,6 +148,13 @@ public class PromptRegion
             }
             Parts.Add(p);
             addMore = s => p.Prompt += s;
+        }
+        foreach (Part part in Parts)
+        {
+            if (part.Type == PartType.Segment && string.IsNullOrWhiteSpace(part.Prompt))
+            {
+                part.Prompt = GlobalPrompt;
+            }
         }
     }
 }

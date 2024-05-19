@@ -8,15 +8,15 @@ using System.IO;
 
 namespace StableSwarmUI.WebAPI;
 
-/// <summary>Central API registration class for utility APIs.</summary>
+[API.APIClass("General utility API routes.")]
 public static class UtilAPI
 {
     public static void Register()
     {
         API.RegisterAPICall(CountTokens);
         API.RegisterAPICall(TokenizeInDetail);
-        API.RegisterAPICall(Pickle2SafeTensor);
-        API.RegisterAPICall(WipeMetadata);
+        API.RegisterAPICall(Pickle2SafeTensor, true);
+        API.RegisterAPICall(WipeMetadata, true);
     }
 
     public static ConcurrentDictionary<string, CliplikeTokenizer> Tokenizers = new();
@@ -34,12 +34,12 @@ public static class UtilAPI
         }
         try
         {
-            CliplikeTokenizer tokenizer = Tokenizers.GetOrAdd(tokenset, set =>
+            CliplikeTokenizer tokenizer = Tokenizers.GetOrCreate(tokenset, () =>
             {
-                string fullPath = $"src/srcdata/Tokensets/{set}.txt.gz";
+                string fullPath = $"src/srcdata/Tokensets/{tokenset}.txt.gz";
                 if (!File.Exists(fullPath))
                 {
-                    throw new InvalidOperationException($"Tokenset '{set}' does not exist.");
+                    throw new InvalidOperationException($"Tokenset '{tokenset}' does not exist.");
                 }
                 CliplikeTokenizer tokenizer = new();
                 tokenizer.Load(fullPath);
@@ -53,23 +53,60 @@ public static class UtilAPI
         }
     }
 
-    /// <summary>API route to count the CLIP-like tokens in a given text prompt.</summary>
-    public static async Task<JObject> CountTokens(string text, string tokenset = "clip", bool weighting = true)
+    private static readonly string[] SkippablePromptSyntax = ["segment", "object", "region", "clear"];
+
+    [API.APIDescription("Count the CLIP-like tokens in a given text prompt.", "\"count\": 0")]
+    public static async Task<JObject> CountTokens(
+        [API.APIParameter("The text to tokenize.")] string text,
+        [API.APIParameter("If false, processing prompt syntax (things like `<random:`). If true, don't process that.")] bool skipPromptSyntax = false,
+        [API.APIParameter("What tokenization set to use.")] string tokenset = "clip",
+        [API.APIParameter("If true, process weighting (like `(word:1.5)`). If false, don't process that.")] bool weighting = true)
     {
+        if (skipPromptSyntax)
+        {
+            foreach (string str in SkippablePromptSyntax)
+            {
+                int skippable = text.IndexOf($"<{str}:");
+                if (skippable != -1)
+                {
+                    text = text[..skippable];
+                }
+            }
+            text = T2IParamInput.ProcessPromptLikeForLength(text);
+        }
         (JObject error, CliplikeTokenizer tokenizer) = GetTokenizerForAPI(text, tokenset);
-        if (error != null)
+        if (error is not null)
         {
             return error;
         }
-        CliplikeTokenizer.Token[] tokens = weighting ? tokenizer.EncodeWithWeighting(text) : tokenizer.Encode(text);
-        return new JObject() { ["count"] = tokens.Length };
+        if (!weighting)
+        {
+            CliplikeTokenizer.Token[] rawTokens = tokenizer.Encode(text);
+            return new JObject() { ["count"] = rawTokens.Length };
+        }
+        string[] sections = text.Split("<break>");
+        int biggest = sections.Select(text => tokenizer.EncodeWithWeighting(text).Length).Max();
+        return new JObject() { ["count"] = biggest };
     }
 
-    /// <summary>API route to tokenize some prompt text and get thorough detail about it.</summary>
-    public static async Task<JObject> TokenizeInDetail(string text, string tokenset = "clip", bool weighting = true)
+    [API.APIDescription("Tokenize some prompt text and get thorough detail about it.",
+        """
+            "tokens":
+            [
+                {
+                    "id": 123,
+                    "weight": 1.0,
+                    "text": "tok"
+                }
+            ]
+        """)]
+    public static async Task<JObject> TokenizeInDetail(
+        [API.APIParameter("The text to tokenize.")] string text,
+        [API.APIParameter("What tokenization set to use.")] string tokenset = "clip",
+        [API.APIParameter("If true, process weighting (like `(word:1.5)`). If false, don't process that.")] bool weighting = true)
     {
         (JObject error, CliplikeTokenizer tokenizer) = GetTokenizerForAPI(text, tokenset);
-        if (error != null)
+        if (error is not null)
         {
             return error;
         }
@@ -80,19 +117,21 @@ public static class UtilAPI
         };
     }
 
-    /// <summary>API route to trigger bulk conversion of models from pickle format to safetensors.</summary>
-    public static async Task<JObject> Pickle2SafeTensor(string type, bool fp16)
+    [API.APIDescription("Trigger bulk conversion of models from pickle format to safetensors.", "\"success\": true")]
+    public static async Task<JObject> Pickle2SafeTensor(
+        [API.APIParameter("What type of model to convert, eg `Stable-Diffusion`, `LoRA`, etc.")] string type,
+        [API.APIParameter("If true, convert to fp16 while processing. If false, use original model's weight type.")] bool fp16)
     {
         if (!Program.T2IModelSets.TryGetValue(type, out T2IModelHandler models))
         {
             return new JObject() { ["error"] = $"Invalid type '{type}'." };
         }
-        Process p = PythonLaunchHelper.LaunchGeneric("launchtools/pickle-to-safetensors.py", true, new[] { models.FolderPath, fp16 ? "true" : "false" });
+        Process p = PythonLaunchHelper.LaunchGeneric("launchtools/pickle-to-safetensors.py", true, [models.FolderPath, fp16 ? "true" : "false"]);
         await p.WaitForExitAsync(Program.GlobalProgramCancel);
         return new JObject() { ["success"] = true };
     }
 
-    /// <summary>API route to trigger a mass metadata reset.</summary>
+    [API.APIDescription("Trigger a mass metadata reset.", "\"success\": true")]
     public static async Task<JObject> WipeMetadata()
     {
         foreach (T2IModelHandler handler in Program.T2IModelSets.Values)

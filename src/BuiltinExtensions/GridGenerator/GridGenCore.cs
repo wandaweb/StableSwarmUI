@@ -15,7 +15,7 @@ public partial class GridGenCore
 
     public static string EXTRA_FOOTER;
 
-    public static List<string> EXTRA_ASSETS = new();
+    public static List<string> EXTRA_ASSETS = [];
 
     public static Action<SingleGridCall, T2IParamInput, bool> GridCallApplyHook;
 
@@ -51,18 +51,24 @@ public partial class GridGenCore
 
     public static List<string> ExpandNumericListRanges(List<string> inList, Type numType)
     {
-        List<string> outList = new();
+        List<string> outList = [];
         for (int i = 0; i < inList.Count; i++)
         {
             string rawVal = inList[i].Trim();
+            bool skip = rawVal.StartsWith("SKIP:");
+            string prefix = skip ? "SKIP:" : "";
+            if (skip)
+            {
+                rawVal = rawVal["SKIP:".Length..].Trim();
+            }
             if (rawVal == ".." || rawVal == "..." || rawVal == "....")
             {
                 if (i < 2 || i + 1 >= inList.Count)
                 {
                     throw new Exception($"Cannot use ellipses notation at index {i}/{inList.Count} - must have at least 2 values before and 1 after.");
                 }
-                double prior = double.Parse(outList[^1]);
-                double doublePrior = double.Parse(outList[^2]);
+                double prior = double.Parse(outList[^1].Replace("SKIP:", ""));
+                double doublePrior = double.Parse(outList[^2].Replace("SKIP:", ""));
                 double after = double.Parse(inList[i + 1]);
                 double step = prior - doublePrior;
                 if ((step < 0) != ((after - prior) < 0))
@@ -77,12 +83,12 @@ public partial class GridGenCore
                     {
                         outVal = (int)Math.Round(outVal);
                     }
-                    outList.Add($"{outVal:0.#######}");
+                    outList.Add($"{prefix}{outVal:0.#######}");
                 }
             }
             else
             {
-                outList.Add(rawVal);
+                outList.Add($"{prefix}{rawVal}");
             }
         }
         return outList;
@@ -94,7 +100,7 @@ public partial class GridGenCore
 
         public Axis Axis;
 
-        public Dictionary<string, string> Params = new();
+        public Dictionary<string, string> Params = [];
 
         public bool Skip = false;
 
@@ -110,7 +116,7 @@ public partial class GridGenCore
             {
                 Key += $"__{axis.Values.Count}";
             }
-            Params = new();
+            Params = [];
             string[] halves = val.Split('=', 2);
             if (halves.Length != 2)
             {
@@ -128,7 +134,7 @@ public partial class GridGenCore
     {
         public string RawID, ID;
 
-        public List<AxisValue> Values = new();
+        public List<AxisValue> Values = [];
 
         public string Title, Description = "";
 
@@ -137,6 +143,8 @@ public partial class GridGenCore
         public string ModeName;
 
         public T2IParamType Mode;
+
+        public static AsciiMatcher ValidKeysMatcher = new(AsciiMatcher.LowercaseLetters + AsciiMatcher.Digits + "_");
 
         /// <summary>Index of the axis within the axis list, used to maintain user-intended ordering.</summary>
         public int Index;
@@ -154,7 +162,7 @@ public partial class GridGenCore
                 Title = RawID;
             }
             bool isSplitByDoublePipe = listStr.Contains("||");
-            List<string> valuesList = listStr.Split(isSplitByDoublePipe ? "||" : ",").ToList();
+            List<string> valuesList = [.. listStr.Split(isSplitByDoublePipe ? "||" : ",")];
             ModeName = T2IParamTypes.CleanNameGeneric(id);
             if (!T2IParamTypes.TryGetType(T2IParamTypes.CleanTypeName(ModeName), out Mode, grid.InitialParams))
             {
@@ -173,18 +181,46 @@ public partial class GridGenCore
             {
                 valuesList = Mode.ParseList(valuesList);
             }
+            HashSet<string> keys = [];
             foreach (string val in valuesList)
             {
                 try
                 {
                     string valStr = val.Trim();
+                    bool skip = valStr.StartsWith("SKIP:");
+                    if (skip)
+                    {
+                        valStr = valStr["SKIP:".Length..].Trim();
+                    }
                     index++;
                     if (isSplitByDoublePipe && valStr == "" && index == valuesList.Count)
                     {
                         continue;
                     }
-                    valStr = T2IParamTypes.ValidateParam(Mode, valStr, grid.InitialParams.SourceSession);
-                    Values.Add(new AxisValue(grid, this, index.ToString(), $"{id}={valStr}"));
+                    if (!skip)
+                    {
+                        valStr = T2IParamTypes.ValidateParam(Mode, valStr, grid.InitialParams.SourceSession);
+                    }
+                    string key = ValidKeysMatcher.TrimToMatches(valStr.ToLowerFast());
+                    if (key.Length > 15)
+                    {
+                        // Long keys might be model names or similar, so trim them to a probably better name
+                        key = ValidKeysMatcher.TrimToMatches(valStr.AfterLast('/').ToLowerFast().Replace(".safetensors", ""));
+                        if (key.Length > 15)
+                        {
+                            key = key[0..15];
+                        }
+                    }
+                    if (key.Length < 4 || keys.Contains(key))
+                    {
+                        key = $"{key}{index}";
+                    }
+                    while (keys.Contains(key)) // Backup for if there's a key that looks like the indexed key of another value for some reason
+                    {
+                        key = $"{key}_2";
+                    }
+                    keys.Add(key);
+                    Values.Add(new AxisValue(grid, this, key, $"{id}={valStr}") { Skip = skip });
                 }
                 catch (InvalidDataException ex)
                 {
@@ -202,13 +238,13 @@ public partial class GridGenCore
     {
         // TODO: Variables
 
-        public List<Axis> Axes = new();
+        public List<Axis> Axes = [];
 
         public string Title, Description, Author;
 
         public string Format;
 
-        public Dictionary<string, string> BaseParams = new();
+        public Dictionary<string, string> BaseParams = [];
 
         public int MinWidth, MinHeight;
 
@@ -216,7 +252,7 @@ public partial class GridGenCore
 
         public string DefaultX, DefaultY, DefaultX2 = "none", DefaultY2 = "none";
 
-        public List<(string, DateTimeOffset)> LastUpdates = new(); // TODO: rework to just use the server instead of this legacy trick (holdover from python version)
+        public List<(string, DateTimeOffset)> LastUpdates = []; // TODO: rework to just use the server instead of this legacy trick (holdover from python version)
 
         public LockObject LastUpdatLock = new();
 
@@ -226,14 +262,21 @@ public partial class GridGenCore
 
         public GridRunner Runner;
 
-        public volatile bool MustCancel;
+        public Func<bool> MustCancel = () => false;
 
         public bool PublishMetadata;
+
+        public enum OutputyTypeEnum
+        {
+            WEB_PAGE, JUST_IMAGES, GRID_IMAGE
+        }
+
+        public OutputyTypeEnum OutputType;
     }
 
     public class SingleGridCall
     {
-        public List<AxisValue> Values = new();
+        public List<AxisValue> Values = [];
 
         public bool Skip;
 
@@ -330,6 +373,10 @@ public partial class GridGenCore
 
         public void UpdateLiveFile(string newFile)
         {
+            if (Grid.OutputType != Grid.OutputyTypeEnum.WEB_PAGE)
+            {
+                return;
+            }
             lock (Grid.LastUpdatLock)
             {
                 DateTimeOffset tNow = DateTimeOffset.Now;
@@ -341,22 +388,26 @@ public partial class GridGenCore
 
         public List<SingleGridCall> BuildValueSetList(List<Axis> axisList, bool topmost = true)
         {
+            if (Grid.MustCancel())
+            {
+                return [];
+            }
             if (axisList.Count == 0)
             {
-                return new();
+                return [];
             }
             if (WeightOrder && topmost)
             {
                 Logs.Verbose($"Axis list ordered by index: {string.Join(", ", axisList.Select(a => a.Title))}");
-                axisList = axisList.OrderBy(a => a.Mode.ChangeWeight).ToList();
+                axisList = [.. axisList.OrderBy(a => a.Mode.ChangeWeight)];
                 Logs.Verbose($"Axis list ordered by weight: {string.Join(", ", axisList.Select(a => a.Title))}");
             }
             Axis curAxis = axisList[0];
             if (axisList.Count == 1)
             {
-                return curAxis.Values.Where(v => !v.Skip || !FastSkip).Select(v => new SingleGridCall(Grid, new() { v })).ToList();
+                return curAxis.Values.Where(v => !v.Skip || !FastSkip).Select(v => new SingleGridCall(Grid, [v])).ToList();
             }
-            List<SingleGridCall> result = new();
+            List<SingleGridCall> result = [];
             List<Axis> nextAxisList = axisList.GetRange(1, axisList.Count - 1);
             foreach (SingleGridCall obj in BuildValueSetList(nextAxisList, false))
             {
@@ -364,7 +415,7 @@ public partial class GridGenCore
                 {
                     if (!val.Skip || !FastSkip)
                     {
-                        List<AxisValue> newList = obj.Values.ToList();
+                        List<AxisValue> newList = [.. obj.Values];
                         newList.Add(val);
                         result.Add(new SingleGridCall(Grid, newList));
                     }
@@ -382,14 +433,29 @@ public partial class GridGenCore
 
         public void Preprocess()
         {
-            if (!Directory.Exists(BasePath))
+            Sets = BuildValueSetList([.. Grid.Axes]);
+            if (Grid.MustCancel())
             {
-                Directory.CreateDirectory(BasePath);
+                return;
             }
-            Sets = BuildValueSetList(Grid.Axes.ToList());
-            Logs.Info($"Have {Sets.Count} unique value sets, will go into {BasePath}");
+            if (Grid.OutputType == Grid.OutputyTypeEnum.WEB_PAGE)
+            {
+                if (!Directory.Exists(BasePath))
+                {
+                    Directory.CreateDirectory(BasePath);
+                }
+                Logs.Info($"[GridGenerator] Have {Sets.Count} unique value sets, will go into {BasePath}");
+            }
+            else
+            {
+                Logs.Info($"[GridGenerator] Have {Sets.Count} unique value sets");
+            }
             foreach (SingleGridCall set in Sets)
             {
+                if (Grid.MustCancel())
+                {
+                    return;
+                }
                 set.BuildBasePaths();
                 set.FlattenParams(Grid);
                 if (set.Skip)
@@ -407,7 +473,7 @@ public partial class GridGenCore
                     TotalSteps += steps;
                 }
             }
-            Logs.Info($"Skipped {TotalSkip} files, will run {TotalRun} files, for {TotalSteps} total steps");
+            Logs.Info($"[GridGenerator] Skipped {TotalSkip} files, will run {TotalRun} files, for {TotalSteps} total steps");
             PostPreprocessCallback?.Invoke(this);
         }
 
@@ -421,14 +487,14 @@ public partial class GridGenCore
                 {
                     continue;
                 }
-                if (Grid.MustCancel)
+                if (Grid.MustCancel())
                 {
                     return;
                 }
                 Iteration++;
                 if (!dry)
                 {
-                    Logs.Debug($"Pre-prepping {Iteration}/{TotalRun} ... Set: {set.Data}, file {set.BaseFilepath}");
+                    Logs.Debug($"[GridGenerator] Pre-prepping {Iteration}/{TotalRun} ... Set: {set.Data}, file {set.BaseFilepath}");
                 }
                 T2IParamInput p = Params.Clone();
                 GridRunnerPreDryHook?.Invoke(this);
@@ -441,7 +507,7 @@ public partial class GridGenCore
                 {
                     GridRunnerPostDryHook(this, p, set).ContinueWith(_ =>
                     {
-                        UpdateLiveFile($"{URLBase}/{set.BaseFilepath}.{Grid.Format}");
+                        UpdateLiveFile($"{set.BaseFilepath}.{Grid.Format}");
                     });
                 }
                 catch (FileNotFoundException e)
@@ -451,7 +517,7 @@ public partial class GridGenCore
                     {
                         Logs.Error("\n\n\nOS Error: The filename or extension is too long - see this article to fix that: https://www.autodesk.com/support/technical/article/caas/sfdcarticles/sfdcarticles/The-Windows-10-default-path-length-limitation-MAX-PATH-is-256-characters.html \n\n\n");
                     }
-                    throw e;
+                    throw;
                 }
             }
         }
@@ -485,7 +551,7 @@ public partial class GridGenCore
             {
                 results["metadata"] = null; // TODO: webdata_get_base_param_data(p)
             }
-            JArray axes = new();
+            JArray axes = [];
             foreach (Axis axis in Grid.Axes)
             {
                 JObject jAxis = new()
@@ -494,7 +560,7 @@ public partial class GridGenCore
                     ["title"] = axis.Title,
                     ["description"] = axis.Description ?? ""
                 };
-                JArray values = new();
+                JArray values = [];
                 foreach (AxisValue val in axis.Values)
                 {
                     JObject jVal = new()
@@ -531,12 +597,15 @@ public partial class GridGenCore
         public string BuildHtml(string footerExtra)
         {
             string html = File.ReadAllText($"{ASSETS_DIR}/page.html");
-            string xSelect = "";
-            string ySelect = "";
-            string x2Select = RadioButtonHtml("x2_axis_selector", "x2_none", "None", "None");
-            string y2Select = RadioButtonHtml("y2_axis_selector", "y2_none", "None", "None");
-            string content = "<div style=\"margin: auto; width: fit-content;\"><table class=\"sel_table\">\n";
-            string advancedSettings = "";
+            StringBuilder xSelect = new(1024);
+            StringBuilder ySelect = new(1024);
+            StringBuilder x2Select = new(1024);
+            x2Select.Append(RadioButtonHtml("x2_axis_selector", "x2_none", "None", "None"));
+            StringBuilder y2Select = new(1024);
+            y2Select.Append(RadioButtonHtml("y2_axis_selector", "y2_none", "None", "None"));
+            StringBuilder content = new(1024);
+            content.Append("<div style=\"margin: auto; width: fit-content;\"><table class=\"sel_table\">\n");
+            StringBuilder advancedSettings = new(1024);
             bool primary = true;
             foreach (Axis axis in Grid.Axes)
             {
@@ -544,14 +613,14 @@ public partial class GridGenCore
                 {
                     string axisDescrip = CleanForWeb(axis.Description ?? "");
                     string trClass = primary ? "primary" : "secondary";
-                    content += $"<tr class=\"{trClass}\">\n<td>\n<h4>{EscapeHtml(axis.Title)}</h4>\n";
-                    advancedSettings += $"\n<h4>{axis.Title}</h4><div class=\"timer_box\">Auto cycle every <input style=\"width:30em;\" autocomplete=\"off\" type=\"range\" min=\"0\" max=\"360\" value=\"0\" class=\"form-range timer_range\" id=\"range_tablist_{axis.ID}\"><label class=\"form-check-label\" for=\"range_tablist_{axis.ID}\" id=\"label_range_tablist_{axis.ID}\">0 seconds</label></div>\nShow value: ";
+                    content.Append($"<tr class=\"{trClass}\">\n<td>\n<h4>{EscapeHtml(axis.Title)}</h4>\n");
+                    advancedSettings.Append($"\n<h4>{axis.Title}</h4><div class=\"timer_box\">Auto cycle every <input style=\"width:30em;\" autocomplete=\"off\" type=\"range\" min=\"0\" max=\"360\" value=\"0\" class=\"form-range timer_range\" id=\"range_tablist_{axis.ID}\"><label class=\"form-check-label\" for=\"range_tablist_{axis.ID}\" id=\"label_range_tablist_{axis.ID}\">0 seconds</label></div>\nShow value: ");
                     string axisClass = "axis_table_cell";
                     if (axisDescrip.Trim().Length == 0)
                     {
                         axisClass += " emptytab";
                     }
-                    content += $"<div class=\"{axisClass}\">{axisDescrip}</div></td>\n<td><ul class=\"nav nav-tabs\" role=\"tablist\" id=\"tablist_{axis.ID}\">\n";
+                    content.Append($"<div class=\"{axisClass}\">{axisDescrip}</div></td>\n<td><ul class=\"nav nav-tabs\" role=\"tablist\" id=\"tablist_{axis.ID}\">\n");
                     primary = !primary;
                     bool isFirst = axis.DefaultID is null;
                     foreach (AxisValue val in axis.Values)
@@ -564,11 +633,11 @@ public partial class GridGenCore
                         string active = isFirst ? " active" : "";
                         isFirst = false;
                         string descrip = CleanForWeb(val.Description ?? "");
-                        content += $"<li class=\"nav-item\" role=\"presentation\"><a class=\"nav-link{active}\" data-bs-toggle=\"tab\" href=\"#tab_{axis.ID}__{val.Key}\" id=\"clicktab_{axis.ID}__{val.Key}\" aria-selected=\"{selected}\" role=\"tab\" title=\"{EscapeHtml(val.Title)}: {descrip}\">{EscapeHtml(val.Title)}</a></li>\n";
-                        advancedSettings += $"&nbsp;<input class=\"form-check-input\" type=\"checkbox\" autocomplete=\"off\" id=\"showval_{axis.ID}__{val.Key}\" checked=\"true\" onchange=\"javascript:toggleShowVal('{axis.ID}', '{val.Key}')\"> <label class=\"form-check-label\" for=\"showval_{axis.ID}__{val.Key}\" title=\"Uncheck this to hide '{val.Title}' from the page.\">{val.Title}</label>";
+                        content.Append($"<li class=\"nav-item\" role=\"presentation\"><a class=\"nav-link{active}\" data-bs-toggle=\"tab\" href=\"#tab_{axis.ID}__{val.Key}\" id=\"clicktab_{axis.ID}__{val.Key}\" aria-selected=\"{selected}\" role=\"tab\" title=\"{EscapeHtml(val.Title)}: {descrip}\">{EscapeHtml(val.Title)}</a></li>\n");
+                        advancedSettings.Append($"&nbsp;<div class=\"advanced-checkbox\"><input class=\"form-check-input\" type=\"checkbox\" autocomplete=\"off\" id=\"showval_{axis.ID}__{val.Key}\" checked=\"true\" onchange=\"javascript:toggleShowVal('{axis.ID}', '{val.Key}')\"> <label class=\"form-check-label\" for=\"showval_{axis.ID}__{val.Key}\" title=\"Uncheck this to hide '{val.Title}' from the page.\">{val.Title}</label></div>");
                     }
-                    advancedSettings += $"&nbsp;&nbsp;<button class=\"submit\" onclick=\"javascript:toggleShowAllAxis('{axis.ID}')\">Toggle All</button>";
-                    content += "</ul>\n<div class=\"tab-content\">\n";
+                    advancedSettings.Append($"&nbsp;&nbsp;<button class=\"submit\" onclick=\"javascript:toggleShowAllAxis('{axis.ID}')\">Toggle All</button>");
+                    content.Append("</ul>\n<div class=\"tab-content\">\n");
                     isFirst = axis.DefaultID is null;
                     foreach (AxisValue val in axis.Values)
                     {
@@ -583,32 +652,36 @@ public partial class GridGenCore
                         {
                             active += " emptytab";
                         }
-                        content += $"<div class=\"tab-pane{active}\" id=\"tab_{axis.ID}__{val.Key}\" role=\"tabpanel\"><div class=\"tabval_subdiv\">{descrip}</div></div>\n";
+                        content.Append($"<div class=\"tab-pane{active}\" id=\"tab_{axis.ID}__{val.Key}\" role=\"tabpanel\"><div class=\"tabval_subdiv\">{descrip}</div></div>\n");
                     }
-                    content += "</div></td></tr>\n";
-                    xSelect += RadioButtonHtml("x_axis_selector", $"x_{axis.ID}", axisDescrip, axis.Title);
-                    ySelect += RadioButtonHtml("y_axis_selector", $"y_{axis.ID}", axisDescrip, axis.Title);
-                    x2Select += RadioButtonHtml("x2_axis_selector", $"x2_{axis.ID}", axisDescrip, axis.Title);
-                    y2Select += RadioButtonHtml("y2_axis_selector", $"y2_{axis.ID}", axisDescrip, axis.Title);
+                    content.Append("</div></td></tr>\n");
+                    xSelect.Append(RadioButtonHtml("x_axis_selector", $"x_{axis.ID}", axisDescrip, axis.Title));
+                    ySelect.Append(RadioButtonHtml("y_axis_selector", $"y_{axis.ID}", axisDescrip, axis.Title));
+                    x2Select.Append(RadioButtonHtml("x2_axis_selector", $"x2_{axis.ID}", axisDescrip, axis.Title));
+                    y2Select.Append(RadioButtonHtml("y2_axis_selector", $"y2_{axis.ID}", axisDescrip, axis.Title));
                 }
                 catch (Exception ex)
                 {
                     throw new Exception($"Failed to build HTML for axis '{axis.ID}': {ex}");
                 }
             }
-            content += "</table>\n<div class=\"axis_selectors\">";
-            content += AxisBar("X Axis", xSelect);
-            content += AxisBar("Y Axis", ySelect);
-            content += AxisBar("X Super-Axis", x2Select);
-            content += AxisBar("Y Super-Axis", y2Select);
-            content += "</div></div>\n";
+            content.Append("</table>\n<div class=\"axis_selectors\">");
+            content.Append(AxisBar("X Axis", xSelect.ToString()));
+            content.Append(AxisBar("Y Axis", ySelect.ToString()));
+            content.Append(AxisBar("X Super-Axis", x2Select.ToString()));
+            content.Append(AxisBar("Y Super-Axis", y2Select.ToString()));
+            content.Append("</div></div>\n");
             html = html.Replace("{TITLE}", Grid.Title).Replace("{CLEAN_DESCRIPTION}", CleanForWeb(Grid.Description ?? "")).Replace("{DESCRIPTION}", Grid.Description ?? "")
-                .Replace("{CONTENT}", content).Replace("{ADVANCED_SETTINGS}", advancedSettings).Replace("{AUTHOR}", Grid.Author).Replace("{EXTRA_FOOTER}", EXTRA_FOOTER + footerExtra).Replace("{VERSION}", Utilities.Version);
+                .Replace("{CONTENT}", content.ToString()).Replace("{ADVANCED_SETTINGS}", advancedSettings.ToString()).Replace("{AUTHOR}", Grid.Author).Replace("{EXTRA_FOOTER}", EXTRA_FOOTER + footerExtra).Replace("{VERSION}", Utilities.Version);
             return html;
         }
 
         public string EmitWebData(string path, T2IParamInput input, bool dryRun, string footerExtra)
         {
+            if (Grid.OutputType != Grid.OutputyTypeEnum.WEB_PAGE)
+            {
+                return null;
+            }
             Logs.Info("Building final web data...");
             string json = BuildJson(input, dryRun);
             if (!dryRun)
@@ -616,7 +689,7 @@ public partial class GridGenCore
                 File.WriteAllText(path + "/last.js", "window.lastUpdated = []");
             }
             File.WriteAllText(path + "/data.js", "rawData = " + json);
-            foreach (string f in EXTRA_ASSETS.Union(new string[] { "bootstrap.min.css", "bootstrap.bundle.min.js", "proc.js", "jquery.min.js", "jsgif.js", "styles.css", "styles-user.css", "placeholder.png" }))
+            foreach (string f in EXTRA_ASSETS.Union(["bootstrap.min.css", "bootstrap.bundle.min.js", "proc.js", "jquery.min.js", "jsgif.js", "styles.css", "styles-user.css", "placeholder.png"]))
             {
                 string target = $"{path}/{f}";
                 if (File.Exists(target))
@@ -634,20 +707,34 @@ public partial class GridGenCore
 
     // TODO: Clever model logic switching so this doesn't spam-switch
 
-    public static Grid Run(T2IParamInput baseParams, JToken axes, object LocalData, string inputFile, string outputFolderBase, string urlBase, string outputFolderName, bool doOverwrite, bool fastSkip, bool generatePage, bool publishGenMetadata, bool dryRun, bool weightOrder, string footerExtra = "")
+    public static Grid Run(T2IParamInput baseParams, JToken axes, object LocalData, string inputFile, string outputFolderBase, string urlBase, string outputFolderName, bool doOverwrite, bool fastSkip, bool generatePage, bool publishGenMetadata, bool dryRun, bool weightOrder, string outputType, string format, Func<bool> mustCancel, string footerExtra = "")
     {
         Grid grid = new()
         {
             Title = outputFolderName,
             Description = "",
             Author = "Unspecified",
-            Format = "png",
-            Axes = new(),
-            BaseParams = new(),
+            Format = format,
+            Axes = [],
+            BaseParams = [],
             InitialParams = baseParams.Clone(),
             LocalData = LocalData,
-            PublishMetadata = publishGenMetadata
+            PublishMetadata = publishGenMetadata,
+            MustCancel = mustCancel ?? (() => false),
+            OutputType = outputType switch
+            {
+                "Just Images" => Grid.OutputyTypeEnum.JUST_IMAGES,
+                "Grid Image" => Grid.OutputyTypeEnum.GRID_IMAGE,
+                "Web Page" => Grid.OutputyTypeEnum.WEB_PAGE,
+                _ => throw new Exception($"Invalid output type '{outputType}'")
+            }
         };
+        if (grid.OutputType != Grid.OutputyTypeEnum.WEB_PAGE)
+        {
+            generatePage = false;
+            grid.PublishMetadata = false;
+            outputFolderName = $"grid-{DateTimeOffset.UtcNow:yyyy-MM-dd-HH-mm-ss}";
+        }
         int axisIndex = 0;
         foreach (JToken axis in axes)
         {
@@ -697,6 +784,10 @@ public partial class GridGenCore
         };
         grid.Runner = runner;
         runner.Preprocess();
+        if (grid.MustCancel())
+        {
+            return grid;
+        }
         string json = "";
         if (generatePage)
         {
@@ -732,7 +823,10 @@ public partial class GridGenCore
             {
                 try
                 {
-                    File.Delete(folder + "/last.js");
+                    if (File.Exists(folder + "/last.js"))
+                    {
+                        File.Delete(folder + "/last.js");
+                    }
                 }
                 catch (Exception ex)
                 {

@@ -80,8 +80,8 @@ public abstract class AbstractT2IBackend
     /// <summary>If non-empty, is a user-facing title-override for the given backend.</summary>
     public string Title = "";
 
-    /// <summary>If true, a special process wants to claim this backend next (ie, normal gen usage should not run).</summary>
-    public volatile bool Reserved = false;
+    /// <summary>If true, this backend is intending to shutdown, and should be excluded from generation.</summary>
+    public volatile bool ShutDownReserve = false;
 
     /// <summary>The maximum number of simultaneous requests this backend should take.</summary>
     public int MaxUsages = 1;
@@ -89,8 +89,20 @@ public abstract class AbstractT2IBackend
     /// <summary>Whether this backend has the capability to load a model.</summary>
     public bool CanLoadModels = true;
 
+    /// <summary>If above 0, something wants preferential ownership of this backend, and so general generations should not be sent to it.</summary>
+    public volatile int Reservations = 0;
+
     /// <summary>The list of all model names this server has (key=model subtype, value=list of filenames), or null if untracked.</summary>
     public Dictionary<string, List<string>> Models = null;
+
+    /// <summary>Tells the backend to free its memory usage. Returns true if it happened, false if memory is still in use.
+    /// Note that some backends may take extra time between when this call returns and when memory is actually freed, such as if they have jobs to wrap up or slow polling rates.
+    /// Generally give at least one full second before assuming memory is properly cleared.</summary>
+    /// <param name="systemRam">If true, system RAM should be cleaned. If false, only VRAM needs to be freed.</param>
+    public virtual async Task<bool> FreeMemory(bool systemRam)
+    {
+        return false;
+    }
 
     /// <summary>Exception can be thrown to indicate the backend cannot fulfill the request, but for temporary reasons, and another backend should be used instead.</summary>
     public class PleaseRedirectException : Exception

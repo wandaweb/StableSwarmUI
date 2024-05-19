@@ -5,55 +5,59 @@ let refreshParamsExtra = [];
 
 function getHtmlForParam(param, prefix) {
     try {
-        // Actual HTML popovers are too new at time this code was written (experimental status, not supported on most browsers)
-        let example = param.examples ? `<br><br>Examples: <code>${param.examples.map(escapeHtml).join("</code>,&emsp;<code>")}</code>` : '';
-        let pop = param.no_popover ? '' : `<div class="sui-popover" id="popover_${prefix}${param.id}"><b>${escapeHtml(param.name)}</b> (${param.type}):<br>&emsp;${escapeHtml(param.description)}${example}</div>`;
+        let example = param.examples ? `<br><br><span class="translate">Examples</span>: <code>${param.examples.map(escapeHtmlNoBr).join(`</code>,&emsp;<code>`)}</code>` : '';
+        let pop = param.no_popover ? '' : `<div class="sui-popover" id="popover_${prefix}${param.id}"><b class="translate">${escapeHtmlNoBr(param.name)}</b> (${param.type}):<br>&emsp;<span class="translate">${safeHtmlOnly(param.description)}</span>${example}</div>`;
         switch (param.type) {
             case 'text':
                 let runnable = param.view_type == 'prompt' ? () => textPromptAddKeydownHandler(getRequiredElementById(`${prefix}${param.id}`)) : null;
-                return {html: makeTextInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.view_type == 'prompt', param.description, param.toggleable, false, !param.no_popover) + pop, runnable: runnable};
+                return {html: makeTextInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, param.view_type, param.description, param.toggleable, false, !param.no_popover) + pop, runnable: runnable};
             case 'decimal':
             case 'integer':
-                let min = param.min;
-                let max = param.max;
-                if (min == 0 && max == 0) {
+                let min = param.min, max = param.max, step = param.step || 1;
+                if (!min && min != 0) {
                     min = -9999999;
+                }
+                if (!max && max != 0) {
                     max = 9999999;
                 }
                 switch (param.view_type) {
                     case 'small':
-                        return {html: makeNumberInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.min, param.max, param.step, 'small', param.toggleable, !param.no_popover) + pop};
+                        return {html: makeNumberInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, min, max, step, 'small', param.toggleable, !param.no_popover) + pop,
+                        runnable: () => autoNumberWidth(getRequiredElementById(`${prefix}${param.id}`))};
                     case 'normal':
                     case 'big':
-                        return {html: makeNumberInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.min, param.max, param.step, 'big', param.toggleable, !param.no_popover) + pop};
+                        return {html: makeNumberInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, min, max, step, 'big', param.toggleable, !param.no_popover) + pop,
+                        runnable: () => autoNumberWidth(getRequiredElementById(`${prefix}${param.id}`))};
                     case 'seed':
-                        return {html: makeNumberInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.min, param.max, param.step, 'seed', param.toggleable, !param.no_popover) + pop};
+                        return {html: makeNumberInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, min, max, step, 'seed', param.toggleable, !param.no_popover) + pop};
                     case 'slider':
-                        return {html: makeSliderInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.min, param.max, param.view_max || param.max, param.step, false, param.toggleable, !param.no_popover) + pop,
+                        return {html: makeSliderInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, min, max, param.view_min || min, param.view_max || max, step, false, param.toggleable, !param.no_popover) + pop,
                             runnable: () => enableSliderForBox(findParentOfClass(getRequiredElementById(`${prefix}${param.id}`), 'auto-slider-box'))};
                     case 'pot_slider':
-                        return {html: makeSliderInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.min, param.max, param.view_max || param.max, param.step, true, param.toggleable, !param.no_popover) + pop,
+                        return {html: makeSliderInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, min, max, param.view_min || min, param.view_max || max, step, true, param.toggleable, !param.no_popover) + pop,
                             runnable: () => enableSliderForBox(findParentOfClass(getRequiredElementById(`${prefix}${param.id}`), 'auto-slider-box'))};
                 }
                 break;
             case 'boolean':
-                return {html: makeCheckboxInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.toggleable, false, !param.no_popover) + pop};
+                return {html: makeCheckboxInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, param.toggleable, false, !param.no_popover) + pop};
             case 'dropdown':
-                return {html: makeDropdownInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.values, param.default, param.toggleable, !param.no_popover) + pop};
+                return {html: makeDropdownInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.values, param.default, param.toggleable, !param.no_popover, param['value_names']) + pop,
+                        runnable: () => autoSelectWidth(getRequiredElementById(`${prefix}${param.id}`))};
             case 'list':
                 if (param.values) {
-                    return {html: makeMultiselectInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.values, param.default, "Select...", param.toggleable, !param.no_popover) + pop,
+                    return {html: makeMultiselectInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.values, param.default, "Select...", param.toggleable, !param.no_popover) + pop,
                         runnable: () => $(`#${prefix}${param.id}`).select2({ theme: "bootstrap-5", width: 'style', placeholder: $(this).data('placeholder'), closeOnSelect: false }) };
                 }
-                return {html: makeTextInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.default, param.view_type == 'prompt', param.description, param.toggleable, false, !param.no_popover) + pop};
+                return {html: makeTextInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.default, param.view_type, param.description, param.toggleable, false, !param.no_popover) + pop};
             case 'model':
                 let modelList = param.values && param.values.length > 0 ? param.values : coreModelMap[param.subtype || 'Stable-Diffusion'];
-                return {html: makeDropdownInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, modelList, param.default, param.toggleable, !param.no_popover) + pop};
+                modelList = modelList.map(m => cleanModelName(m));
+                return {html: makeDropdownInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, modelList, param.default, param.toggleable, !param.no_popover) + pop,
+                    runnable: () => autoSelectWidth(getRequiredElementById(`${prefix}${param.id}`))};
             case 'image':
-                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.toggleable) + pop};
+                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
             case 'image_list':
-                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.name, param.description, param.toggleable) + pop};
-
+                return {html: makeImageInput(param.feature_flag, `${prefix}${param.id}`, param.id, param.name, param.description, param.toggleable, !param.no_popover) + pop};
         }
         console.log(`Cannot generate input for param ${param.id} of type ${param.type} - unknown type`);
         return null;
@@ -71,23 +75,30 @@ function toggleGroupOpen(elem, shouldOpen = null) {
     if (shouldOpen == null) {
         shouldOpen = isClosed;
     }
-    if (shouldOpen) {
-        group.style.display = 'block';
-        parent.classList.remove('input-group-closed');
-        parent.querySelector('.auto-symbol').innerHTML = '&#x2B9F;';
+    doGroupOpenUpdate(group, parent, shouldOpen);
+}
+
+function doGroupOpenUpdate(group, parent, isOpen) {
+    let header = parent.querySelector('.input-group-header');
+    parent.classList.remove('input-group-closed');
+    parent.classList.remove('input-group-open');
+    let symbol = parent.querySelector('.auto-symbol');
+    if (isOpen || header.classList.contains('input-group-noshrink')) {
+        group.style.display = 'flex';
+        parent.classList.add('input-group-open');
+        if (symbol) {
+            symbol.innerHTML = '&#x2B9F;';
+        }
         if (!group.dataset.do_not_save) {
             setCookie(`group_open_${parent.id}`, 'open', 365);
-        }
-        let toggler = document.getElementById(`${group.id}_toggle`);
-        if (toggler) {
-            toggler.checked = true;
-            doToggleGroup(group.id);
         }
     }
     else {
         group.style.display = 'none';
         parent.classList.add('input-group-closed');
-        parent.querySelector('.auto-symbol').innerHTML = '&#x2B9E;';
+        if (symbol) {
+            symbol.innerHTML = '&#x2B9E;';
+        }
         if (!group.dataset.do_not_save) {
             setCookie(`group_open_${parent.id}`, 'closed', 365);
         }
@@ -97,36 +108,55 @@ function toggleGroupOpen(elem, shouldOpen = null) {
 function doToggleGroup(id) {
     let elem = getRequiredElementById(`${id}_toggle`);
     let parent = findParentOfClass(elem, 'input-group');
-    let header = parent.querySelector('.input-group-header');
+    let header = parent.querySelector('.input-group-header .header-label-wrap');
     let group = parent.querySelector('.input-group-content');
-    if (!elem.checked) {
-        if (group.style.display != 'none') {
-            toggleGroupOpen(header);
-        }
+    if (elem.checked) {
+        header.classList.add('input-group-header-activated');
+        group.classList.add('input-group-content-activated');
+    }
+    else {
+        header.classList.remove('input-group-header-activated');
+        group.classList.remove('input-group-content-activated');
     }
     if (!group.dataset.do_not_save) {
         setCookie(`group_toggle_${parent.id}`, elem.checked ? 'yes' : 'no', 365);
     }
+    doGroupOpenUpdate(group, parent, group.style.display != 'none');
 }
 
 function isParamAdvanced(p) {
     return p.group ? p.group.advanced : p.advanced;
 }
 
+document.addEventListener('click', e => {
+    if (e.target.onclick) {
+        return;
+    }
+    let header = findParentOfClass(e.target, 'input-group-header');
+    if (header) {
+        toggleGroupOpen(header);
+    }
+});
+
 function genInputs(delay_final = false) {
     let runnables = [];
     let groupsClose = [];
     let groupsEnable = [];
-    let defaultPromptVisible = false;
-    for (let areaData of [['main_inputs_area', 'new_preset_modal_inputs', (p) => (p.visible || p.id == 'prompt') && !isParamAdvanced(p), true],
+    let isPrompt = (p) => p.id == 'prompt' || p.id == 'negativeprompt';
+    let defaultPromptVisible = rawGenParamTypesFromServer.find(p => isPrompt(p)).visible;
+    for (let areaData of [['main_inputs_area', 'new_preset_modal_inputs', (p) => (p.visible || isPrompt(p)) && !isParamAdvanced(p), true],
             ['main_inputs_area_advanced', 'new_preset_modal_advanced_inputs', (p) => p.visible && isParamAdvanced(p), false],
-            ['main_inputs_area_hidden', 'new_preset_modal_hidden_inputs', (p) => (!p.visible || p.id == 'prompt'), false]]) {
+            ['main_inputs_area_hidden', 'new_preset_modal_hidden_inputs', (p) => (!p.visible || isPrompt(p)), false]]) {
         let area = getRequiredElementById(areaData[0]);
         area.innerHTML = '';
         let presetArea = areaData[1] ? getRequiredElementById(areaData[1]) : null;
         let html = '', presetHtml = '';
         let lastGroup = null;
         let isMain = areaData[3];
+        if (isMain && defaultPromptVisible) {
+            html += `<button class="generate-button" id="generate_button" onclick="getRequiredElementById('alt_generate_button').click()" oncontextmenu="return getRequiredElementById('alt_generate_button').oncontextmenu()">Generate</button>
+            <button class="interrupt-button legacy-interrupt interrupt-button-none" id="interrupt_button" onclick="getRequiredElementById('alt_interrupt_button').click()" oncontextmenu="return getRequiredElementById('alt_interrupt_button').oncontextmenu()">&times;</button>`;
+        }
         for (let param of gen_param_types.filter(areaData[2])) {
             let groupName = param.group ? param.group.name : null;
             if (groupName != lastGroup) {
@@ -140,8 +170,8 @@ function genInputs(delay_final = false) {
                     let infoButton = '';
                     let groupId = param.group.id;
                     if (param.group.description) {
-                        html += `<div class="sui-popover" id="popover_group_${groupId}"><b>${escapeHtml(param.group.name)}</b>:<br>&emsp;${escapeHtml(param.group.description)}</div>`;
-                        infoButton = `<span class="auto-input-qbutton info-popover-button" onclick="doPopover('group_${groupId}')">?</span>`;
+                        html += `<div class="sui-popover" id="popover_group_${groupId}"><b>${translateableHtml(escapeHtml(param.group.name))}</b>:<br>&emsp;${translateableHtml(safeHtmlOnly(param.group.description))}</div>`;
+                        infoButton = `<span class="auto-input-qbutton info-popover-button" onclick="doPopover('group_${groupId}', arguments[0])">?</span>`;
                     }
                     let shouldOpen = getCookie(`group_open_auto-group-${groupId}`) || (param.group.open ? 'open' : 'closed');
                     if (shouldOpen == 'closed') {
@@ -153,27 +183,27 @@ function genInputs(delay_final = false) {
                             groupsEnable.push(groupId);
                         }
                     }
+                    let symbol = param.group.can_shrink ? '<span class="auto-symbol">&#x2B9F;</span>' : '';
+                    let shrinkClass = param.group.can_shrink ? 'input-group-shrinkable' : 'input-group-noshrink';
+                    let extraSpanInfo = param.group.id == 'revision' ? ' style="display: none;"' : '';
+                    let openClass = shouldOpen == 'closed' ? 'input-group-closed' : 'input-group-open';
+                    let extraContentInfo = shouldOpen == 'closed' ? ' style="display: none;"' : '';
                     let toggler = getToggleHtml(param.group.toggles, `input_group_content_${groupId}`, escapeHtml(param.group.name), ' group-toggler-switch', 'doToggleGroup');
-                    html += `<div class="input-group" id="auto-group-${groupId}"><span id="input_group_${groupId}" class="input-group-header"><span onclick="toggleGroupOpen(this)"><span class="auto-symbol">&#x2B9F;</span><span class="header-label">${escapeHtml(param.group.name)}</span></span>${toggler}${infoButton}</span><div class="input-group-content" id="input_group_content_${groupId}">`;
+                    html += `<div class="input-group ${openClass}" id="auto-group-${groupId}"><span${extraSpanInfo} id="input_group_${groupId}" class="input-group-header ${shrinkClass}"><span class="header-label-wrap">${symbol}<span class="header-label">${translateableHtml(escapeHtml(param.group.name))}</span>${toggler}${infoButton}</span></span><div${extraContentInfo} class="input-group-content" id="input_group_content_${groupId}">`;
                     if (presetArea) {
-                        presetHtml += `<div class="input-group"><span id="input_group_preset_${groupId}" onclick="toggleGroupOpen(this)" class="input-group-header"><span class="auto-symbol">&#x2B9F;</span>${escapeHtml(param.group.name)}</span><div class="input-group-content">`;
+                        presetHtml += `<div class="input-group ${openClass}"><span id="input_group_preset_${groupId}" class="input-group-header ${shrinkClass}">${symbol}${translateableHtml(escapeHtml(param.group.name))}</span><div class="input-group-content">`;
                     }
                 }
                 lastGroup = groupName;
             }
-            if (param.id == 'prompt' && param.visible && isMain) {
-                defaultPromptVisible = true;
-                html += `<button class="generate-button" id="generate_button" onclick="getRequiredElementById('alt_generate_button').click()" oncontextmenu="return getRequiredElementById('alt_generate_button').oncontextmenu()">Generate</button>
-                <button class="interrupt-button legacy-interrupt interrupt-button-none" id="interrupt_button" onclick="getRequiredElementById('alt_interrupt_button').click()" oncontextmenu="return getRequiredElementById('alt_interrupt_button').oncontextmenu()">&times;</button>`;
-            }
-            if (param.id == 'prompt' ? param.visible == isMain : true) {
+            if (isPrompt(param) ? param.visible == isMain : true) {
                 let newData = getHtmlForParam(param, "input_");
                 html += newData.html;
                 if (newData.runnable) {
                     runnables.push(newData.runnable);
                 }
             }
-            if (param.id == 'prompt' ? isMain : true) {
+            if (isPrompt(param) ? isMain : true) {
                 let presetParam = JSON.parse(JSON.stringify(param));
                 presetParam.toggleable = true;
                 let presetData = getHtmlForParam(presetParam, "preset_input_");
@@ -188,16 +218,17 @@ function genInputs(delay_final = false) {
             presetArea.innerHTML = presetHtml;
         }
     }
+    hideUnsupportableParams();
     let final = () => {
         for (let runnable of runnables) {
             runnable();
         }
         for (let group of groupsClose) {
             let elem = getRequiredElementById(`input_group_${group}`);
-            toggleGroupOpen(elem);
+            toggleGroupOpen(elem, false);
             let pelem = document.getElementById(`input_group_preset_${group}`);
             if (pelem) {
-                toggleGroupOpen(pelem);
+                toggleGroupOpen(pelem, false);
             }
         }
         for (let group of groupsEnable) {
@@ -214,11 +245,11 @@ function genInputs(delay_final = false) {
             }
         }
         let inputAspectRatio = document.getElementById('input_aspectratio');
-        if (inputAspectRatio) {
-            let inputWidth = getRequiredElementById('input_width');
+        let inputWidth = document.getElementById('input_width');
+        let inputHeight = document.getElementById('input_height');
+        if (inputAspectRatio && inputWidth && inputHeight) {
             let inputWidthParent = findParentOfClass(inputWidth, 'slider-auto-container');
             let inputWidthSlider = getRequiredElementById('input_width_rangeslider');
-            let inputHeight = getRequiredElementById('input_height');
             let inputHeightParent = findParentOfClass(inputHeight, 'slider-auto-container');
             let inputHeightSlider = getRequiredElementById('input_height_rangeslider');
             let resGroupLabel = findParentOfClass(inputWidth, 'input-group').querySelector('.header-label');
@@ -234,7 +265,7 @@ function genInputs(delay_final = false) {
                     inputHeightParent.style.display = 'none';
                     aspect = inputAspectRatio.value;
                 }
-                resGroupLabel.innerText = `Resolution: ${aspect} (${inputWidth.value}x${inputHeight.value})`;
+                resGroupLabel.innerText = `${translate('Resolution')}: ${aspect} (${inputWidth.value}x${inputHeight.value})`;
             };
             for (let target of [inputWidth, inputWidthSlider, inputHeight, inputHeightSlider]) {
                 target.addEventListener('input', resTrick);
@@ -264,7 +295,7 @@ function genInputs(delay_final = false) {
             });
             resTrick();
         }
-        hideRevisionInputs();
+        autoRevealRevision();
         let inputPrompt = document.getElementById('input_prompt');
         if (inputPrompt) {
             let altText = getRequiredElementById('alt_prompt_textbox');
@@ -284,9 +315,13 @@ function genInputs(delay_final = false) {
         }
         let inputNegativePrompt = document.getElementById('input_negativeprompt');
         if (inputNegativePrompt) {
-            inputNegativePrompt.addEventListener('input', () => {
-                monitorPromptChangeForEmbed(inputNegativePrompt.value, 'negative');
-            });
+            let altNegText = getRequiredElementById('alt_negativeprompt_textbox');
+            let update = () => {
+                altNegText.value = inputNegativePrompt.value;
+                triggerChangeFor(altNegText);
+            };
+            inputNegativePrompt.addEventListener('input', update);
+            inputNegativePrompt.addEventListener('change', update);
         }
         let inputLoras = document.getElementById('input_loras');
         if (inputLoras) {
@@ -364,6 +399,13 @@ function genInputs(delay_final = false) {
         let controlnetGroup = document.getElementById('input_group_content_controlnet');
         if (controlnetGroup) {
             controlnetGroup.append(createDiv(`controlnet_button_preview`, null, `<button class="basic-button" onclick="controlnetShowPreview()">Preview</button>`));
+            if (!currentBackendFeatureSet.includes('controlnetpreprocessors')) {
+                controlnetGroup.append(createDiv(`controlnet_install_preprocessors`, null, `<button class="basic-button" onclick="installControlnetPreprocessors()">Install Controlnet Preprocessors</button>`));
+            }
+        }
+        let revisionGroup = document.getElementById('input_group_content_revision');
+        if (revisionGroup && !currentBackendFeatureSet.includes('ipadapter')) {
+            revisionGroup.append(createDiv(`revision_install_ipadapter`, null, `<button class="basic-button" onclick="revisionInstallIPAdapter()">Install IP Adapter</button>`));
         }
         hideUnsupportableParams();
         for (let runnable of postParamBuildSteps) {
@@ -372,6 +414,9 @@ function genInputs(delay_final = false) {
         let loras = document.getElementById('input_loras');
         if (loras) {
             reapplyLoraWeights();
+        }
+        if (imageEditor.active) {
+            imageEditor.doParamHides();
         }
     };
     if (delay_final) {
@@ -388,11 +433,13 @@ function toggle_advanced() {
     let advancedArea = getRequiredElementById('main_inputs_area_advanced');
     let toggler = getRequiredElementById('advanced_options_checkbox');
     advancedArea.style.display = toggler.checked ? 'block' : 'none';
+    localStorage.setItem('display_advanced', toggler.checked);
     for (let param of gen_param_types) {
         if (param.toggleable) {
             doToggleEnable(`input_${param.id}`);
         }
     }
+    hideUnsupportableParams();
 }
 
 function toggle_advanced_checkbox_manual() {
@@ -401,8 +448,10 @@ function toggle_advanced_checkbox_manual() {
     toggle_advanced();
 }
 
-function getGenInput(input_overrides = {}) {
-    let input = {};
+let currentAutomaticVae = 'None';
+
+function getGenInput(input_overrides = {}, input_preoverrides = {}) {
+    let input = JSON.parse(JSON.stringify(input_preoverrides));
     for (let type of gen_param_types) {
         if (type.toggleable && !getRequiredElementById(`input_${type.id}_toggle`).checked) {
             continue;
@@ -418,52 +467,69 @@ function getGenInput(input_overrides = {}) {
         if (parent && parent.dataset.disabled == 'true') {
             continue;
         }
-        if (type.type == "boolean") {
-            input[type.id] = elem.checked;
-        }
-        else if (type.type == "image") {
-            if (elem.dataset.filedata) {
-                input[type.id] = elem.dataset.filedata;
-            }
-        }
-        else if (type.type == "list" && elem.tagName == "SELECT") {
-            let valSet = [...elem.selectedOptions].map(option => option.value);
-            if (valSet.length > 0) {
-                input[type.id] = valSet.join(',');
-            }
-        }
-        else {
-            input[type.id] = elem.value;
+        let val = getInputVal(elem);
+        if (val != null) {
+            input[type.id] = val;
         }
         if (type.id == 'prompt') {
             let container = findParentOfClass(elem, 'auto-input');
             let addedImageArea = container.querySelector('.added-image-area');
+            addedImageArea.style.display = '';
             let imgs = [...addedImageArea.children].filter(c => c.tagName == "IMG");
             if (imgs.length > 0) {
                 input["promptimages"] = imgs.map(img => img.dataset.filedata).join('|');
             }
         }
     }
+    if (!input['vae'] || input['vae'] == 'Automatic') {
+        input['vae'] = currentAutomaticVae;
+    }
     let revisionImageArea = getRequiredElementById('alt_prompt_image_area');
-    let imgs = [...revisionImageArea.children].filter(c => c.tagName == "IMG");
-    if (imgs.length > 0) {
-        input["promptimages"] = imgs.map(img => img.dataset.filedata).join('|');
+    let revisionImages = [...revisionImageArea.children].filter(c => c.tagName == "IMG");
+    if (revisionImages.length > 0) {
+        input["promptimages"] = revisionImages.map(img => img.dataset.filedata).join('|');
+    }
+    if (imageEditor.active) {
+        input["initimage"] = imageEditor.getFinalImageData();
+        input["maskimage"] = imageEditor.getFinalMaskData();
+        input["width"] = imageEditor.realWidth;
+        input["height"] = imageEditor.realHeight;
+        if (!input["initimagecreativity"]) {
+            let param = document.getElementById('input_initimagecreativity');
+            if (param) {
+                input["initimagecreativity"] = param.value;
+            }
+            else {
+                input["initimagecreativity"] = 0.6;
+            }
+        }
     }
     input["presets"] = currentPresets.map(p => p.title);
     for (let key in input_overrides) {
-        input[key] = input_overrides[key];
+        let val = input_overrides[key];
+        if (val == null) {
+            delete input[key];
+        }
+        else {
+            input[key] = input_overrides[key];
+        }
     }
     return input;
 }
 
-function refreshParameterValues(callback = null) {
-    genericRequest('TriggerRefresh', {}, data => {
+function refreshParameterValues(strong = true, callback = null) {
+    genericRequest('TriggerRefresh', {strong: strong}, data => {
+        loadUserData();
         for (let param of data.list) {
             let origParam = gen_param_types.find(p => p.id == param.id);
             if (origParam) {
                 origParam.values = param.values;
             }
         }
+        genericRequest('ListT2IParams', {}, data => {
+            updateAllModels(data.models);
+            allWildcards = data.wildcards;
+        });
         let promises = [Promise.resolve(true)];
         for (let extra of refreshParamsExtra) {
             let promise = extra();
@@ -471,22 +537,28 @@ function refreshParameterValues(callback = null) {
         }
         Promise.all(promises).then(() => {
             for (let param of gen_param_types) {
-                if (param.type == "dropdown") {
-                    let dropdown = getRequiredElementById(`input_${param.id}`);
-                    let val = dropdown.value;
+                let elem = document.getElementById(`input_${param.id}`);
+                let presetElem = document.getElementById(`preset_input_${param.id}`);
+                if (!elem) {
+                    console.log(`Could not find element for param ${param.id}`);
+                    continue;
+                }
+                if ((param.type == "dropdown" || param.type == "model") && param.values) {
+                    let val = elem.value;
                     let html = '';
                     for (let value of param.values) {
                         let selected = value == val ? ' selected="true"' : '';
-                        html += `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(value)}</option>`;
+                        html += `<option value="${escapeHtmlNoBr(value)}"${selected}>${escapeHtml(value)}</option>`;
                     }
-                    dropdown.innerHTML = html;
+                    elem.innerHTML = html;
+                    presetElem.innerHTML = html;
                 }
                 else if (param.type == "list" && param.values) {
-                    let listElem = getRequiredElementById(`input_${param.id}`);
-                    let listOpts = [...listElem.options].map(o => o.value);
+                    let listOpts = [...elem.options].map(o => o.value);
                     let newVals = param.values.filter(v => !listOpts.includes(v));
                     for (let val of newVals) {
-                        $(listElem).append(new Option(val, val, false, false));
+                        $(elem).append(new Option(val, val, false, false));
+                        $(presetElem).append(new Option(val, val, false, false));
                     }
                 }
             }
@@ -510,18 +582,32 @@ function setDirectParamValue(param, value, paramElem = null) {
         $(paramElem).val(vals);
         $(paramElem).trigger('change');
     }
+    else if (param.type == "image" || param.type == "image_list") {
+        // do not edit images directly, this will just misbehave
+    }
     else {
         paramElem.value = value;
     }
     triggerChangeFor(paramElem);
 }
 
-function resetParamsToDefault() {
+function resetParamsToDefault(exclude = []) {
+    for (let cookie of listCookies('lastparam_')) {
+        deleteCookie(cookie);
+    }
+    localStorage.removeItem('last_comfy_workflow_input');
+    for (let box of ['alt_prompt_textbox', 'alt_negativeprompt_textbox']) {
+        let elem = getRequiredElementById(box);
+        elem.value = '';
+        triggerChangeFor(elem);
+    }
     for (let param of gen_param_types) {
         let id = `input_${param.id}`;
-        deleteCookie(`lastparam_${id}`);
-        if (param.visible) {
+        if (param.visible && !exclude.includes(param.id) && document.getElementById(id) != null) {
             setDirectParamValue(param, param.default);
+            if (param.id == 'prompt' || param.id == 'negativeprompt') {
+                triggerChangeFor(getRequiredElementById(id));
+            }
             if (param.toggleable) {
                 let toggler = getRequiredElementById(`${id}_toggle`);
                 toggler.checked = false;
@@ -547,40 +633,87 @@ function resetParamsToDefault() {
     hideUnsupportableParams();
 }
 
+function hideUnalteredParameters() {
+    let filterBox = getRequiredElementById('main_inputs_filter');
+    let filter = filterBox.value.toLowerCase();
+    if (filter.includes('<unaltered>')) {
+        filter = filter.replaceAll('<unaltered>', '');
+    }
+    else {
+        filter += '<unaltered>';
+    }
+    filterBox.value = filter;
+    hideUnsupportableParams();
+}
+
 function hideUnsupportableParams() {
     if (!gen_param_types) {
         return;
     }
+    let ipadapterInstallButton = document.getElementById('revision_install_ipadapter');
+    if (ipadapterInstallButton && currentBackendFeatureSet.includes('ipadapter')) {
+        ipadapterInstallButton.remove();
+    }
+    let controlnetInstallButton = document.getElementById('controlnet_install_preprocessors');
+    if (controlnetInstallButton && currentBackendFeatureSet.includes('controlnetpreprocessors')) {
+        controlnetInstallButton.remove();
+    }
+    let filter = getRequiredElementById('main_inputs_filter').value.toLowerCase();
+    let hideUnaltered = filter.includes('<unaltered>');
+    if (hideUnaltered) {
+        filter = filter.replaceAll('<unaltered>', '');
+    }
     let groups = {};
+    let advancedCount = 0;
+    let toggler = getRequiredElementById('advanced_options_checkbox');
     for (let param of gen_param_types) {
         let elem = document.getElementById(`input_${param.id}`);
         if (elem) {
             let box = findParentOfClass(elem, 'auto-input');
-            let show = param.feature_flag == null || Object.values(backends_loaded).filter(b => b.features.includes(param.feature_flag)).length > 0;
-            param.feature_missing = !show;
-            if (box.dataset.visible_controlled) {
+            let supported = param.feature_flag == null || currentBackendFeatureSet.includes(param.feature_flag);
+            let filterShow = true;
+            if (filter && param.id != 'prompt') {
+                let searchText = `${param.id} ${param.name} ${param.description} ${param.group ? param.group.name : ''}`.toLowerCase();
+                filterShow = searchText.includes(filter);
             }
-            else if (show) {
-                box.style.display = '';
-                box.dataset.disabled = 'false';
+            param.feature_missing = !supported;
+            let show = supported && param.visible;
+            if (hideUnaltered) {
+                let paramToggler = document.getElementById(`input_${param.id}_toggle`);
+                let isAltered = paramToggler ? paramToggler.checked : `${getInputVal(elem)}` != param.default;
+                if (param.group && param.group.toggles && !getRequiredElementById(`input_group_content_${param.group.id}_toggle`).checked) {
+                    isAltered = false;
+                }
+                if (!isAltered) {
+                    show = false;
+                }
             }
-            else {
-                box.style.display = 'none';
-                box.dataset.disabled = 'true';
+            if (param.advanced && !toggler.checked) {
+                show = false;
             }
-            let group = findParentOfClass(elem, 'input-group');
-            if (group) {
-                let groupData = groups[group.id] || { visible: 0 };
-                groups[group.id] = groupData;
+            if (!filterShow) {
+                show = false;
+            }
+            if (param.advanced && supported && filterShow) {
+                advancedCount++;
+            }
+            if (!box.dataset.visible_controlled) {
+                box.style.display = show ? '' : 'none';
+            }
+            box.dataset.disabled = supported ? 'false' : 'true';
+            if (param.group) {
+                let groupData = groups[param.group.id] || { visible: 0 };
+                groups[param.group.id] = groupData;
                 if (show) {
                     groupData.visible++;
                 }
             }
         }
     }
+    getRequiredElementById('advanced_hidden_count').innerText = `(${advancedCount})`;
     for (let group in groups) {
         let groupData = groups[group];
-        let groupElem = getRequiredElementById(group);
+        let groupElem = getRequiredElementById(`auto-group-${group}`);
         if (groupData.visible == 0) {
             groupElem.style.display = 'none';
         }
@@ -590,29 +723,29 @@ function hideUnsupportableParams() {
     }
 }
 
-function paramSorter(a, b) {
-    let aPrio = a.priority, bPrio = b.priority;
-    if (a.group && b.group && a.group.name == b.group.name) {
-    }
-    else if (a.group && !b.group) {
-        aPrio = a.group.priority;
-    }
-    else if (!a.group && b.group) {
-        bPrio = b.group.priority;
-    }
-    else if (a.group && b.group) {
-        aPrio = a.group.priority;
-        bPrio = b.group.priority;
-    }
-    if (aPrio == bPrio) {
-        let aGroup = a.group ? a.group.name : '';
-        let bGroup = b.group ? b.group.name : '';
-        if (aGroup == bGroup) {
-            return a.name.localeCompare(b.name);
+/**
+ * Returns a sorted list of parameters, with the parameters in the order of top, then groupless, then otherParams, then all remaining grouped.
+ * Within each section, parameters are sorted by group priority, then group id, then parameter priority, then parameter id.
+ */
+function sortParameterList(params, top = [], otherParams = []) {
+    function sortFunc(a, b) {
+        if (a.group != null && b.group != null) {
+            if (a.group.priority != b.group.priority) {
+                return a.group.priority - b.group.priority;
+            }
+            if (a.group.id != b.group.id) {
+                return a.group.id.localeCompare(b.group.id);
+            }
         }
-        return aGroup.localeCompare(bGroup);
+        if (a.priority != b.priority) {
+            return a.priority - b.priority;
+        }
+        return a.id.localeCompare(b.id);
     }
-    return aPrio - bPrio;
+    let first = params.filter(p => p.always_first).sort(sortFunc);
+    let prims = params.filter(p => p.group == null && !p.always_first).sort(sortFunc);
+    let others = params.filter(p => p.group != null && !p.always_first).sort(sortFunc);
+    return first.concat(top).concat(prims).concat(otherParams).concat(others);
 }
 
 /** Returns a copy of the parameter name, cleaned for ID format input. */
@@ -643,9 +776,11 @@ function reuseLastParamVal(paramId) {
 
 /** Internal debug function to show the hidden params. */
 function debugShowHiddenParams() {
-    let hiddenArea = getRequiredElementById('main_inputs_area_hidden');
-    hiddenArea.style.display = 'block';
-    hiddenArea.style.visibility = 'visible';
+    for (let id of ['main_inputs_area_hidden', 'simple_inputs_area_hidden']) {
+        let hiddenArea = getRequiredElementById(id);
+        hiddenArea.style.display = 'block';
+        hiddenArea.style.visibility = 'visible';
+    }
 }
 
 /** Loads and shows a preview of ControlNet preprocessing to the user. */
@@ -683,13 +818,12 @@ function controlnetShowPreview() {
         delete genData['batchsize'];
         genData['donotsave'] = true;
         genData['controlnetpreviewonly'] = true;
-        genericRequest('GenerateText2Image', genData, data => {
-            if (data.images.length < 1) {
-                showError("Could not generate preview, something went wrong.");
+        makeWSRequestT2I('GenerateText2ImageWS', genData, data => {
+            if (!data.image) {
                 return;
             }
             let imgElem = document.createElement('img');
-            imgElem.src = data.images[0];
+            imgElem.src = data.image;
             let resultBox = createDiv(null, 'controlnet-preview-result');
             resultBox.append(imgElem);
             clearPreview();
@@ -786,7 +920,7 @@ class ParamConfigurationClass {
                     <div class="param-edit-part">Do Not Save: <input type="checkbox" id="${paramPrefix}__do_not_save"${param.do_not_save ? ` checked="true"` : ''} autocomplete="off"></div>
                     <div class="param-edit-part">IsAdvanced: <input type="checkbox" id="${paramPrefix}__advanced"${param.advanced ? ` checked="true"` : ''} autocomplete="off"></div>
                     <div class="param-edit-part">Ordering Priority: <input type="number" class="param-edit-number" id="${paramPrefix}__priority" value="${param.priority}" autocomplete="off"></div>`;
-            if (param.type == "integer" || param.type == "decimal") {
+            if (param.type == "integer" || param.type == "decimal" || (param.type == "list" && param.max)) {
                 paramHtml += `
                     <div class="param-edit-part">Min: <input class="param-edit-number" type="number" id="${paramPrefix}__min" value="${param.min}" autocomplete="off"></div>
                     <div class="param-edit-part">Max: <input class="param-edit-number" type="number" id="${paramPrefix}__max" value="${param.max}" autocomplete="off"></div>
@@ -805,7 +939,7 @@ class ParamConfigurationClass {
                 }
                 paramHtml += `</select></div>`;
             }
-            if (!param.values) {
+            if (!param.values && param.type != "boolean") {
                 paramHtml += `<div class="param-edit-part">Examples: <input class="param-edit-text" type="text" id="${paramPrefix}__examples" value="${param.examples ? param.examples.join(' || ') : ''}" autocomplete="off"></div>`;
             }
             groupDiv.appendChild(createDiv(null, 'param-edit-container', paramHtml));
@@ -959,3 +1093,222 @@ class ParamConfigurationClass {
 
 /** Instance of ParamConfigurationClass, central handler for user-edited parameters. */
 let paramConfig = new ParamConfigurationClass();
+
+class PromptTabCompleteClass {
+    constructor() {
+        this.prefixes = {
+        };
+        this.registerPrefix('random', 'Select from a set of random words to include', (prefix) => {
+            return ['\nSpecify a comma-separated list of words to choose from, like "<random:cat,dog,elephant>". You can use "||" instead of "," if you need to include commas in your values. You can use eg "1-5" to pick a random number in a range.'];
+        });
+        this.registerPrefix('random[2-4]', 'Selects multiple options from a set of random words to include', (prefix) => {
+            return ['\nSpecify a comma-separated list of words to choose from, like "<random[2]:cat,dog,elephant>". You can use "||" instead of "," if you need to include commas in your values. You can use eg "1-5" to pick a random number in a range. Put a comma in the input (eg "random[2,]:") to make the output have commas too.'];
+        });
+        this.registerPrefix('alternate', 'Cause multiple different words or phrases to be alternated between.', (prefix) => {
+            return ['\nSpecify a comma-separated list of words to choose from, like "<alternate:cat,dog>". You can use "||" instead of "," if you need to include commas in your values.'];
+        });
+        this.registerPrefix('fromto[0.5]', 'Have the prompt change after a given timestep.', (prefix) => {
+            return ['\nSpecify in the brackets a timestep like 10 (for step 10) or 0.5 (for halfway through). In the data area specify the before and the after separate by "," or "|". For example, "<fromto[10]:cat,dog>" switches from "cat" to "dog" at step 10.'];
+        });
+        this.registerPrefix('wildcard', 'Select a random line from a wildcard file (presaved list of options)', (prefix) => {
+            let prefixLow = prefix.toLowerCase();
+            return allWildcards.filter(w => w.toLowerCase().includes(prefixLow));
+        });
+        this.registerPrefix('wildcard[2-4]', 'Select multiple random lines from a wildcard file (presaved list of options) (works same as "random" but for wildcards)', (prefix) => {
+            let prefixLow = prefix.toLowerCase();
+            return allWildcards.filter(w => w.toLowerCase().includes(prefixLow));
+        });
+        this.registerPrefix('repeat', 'Repeat a value several times', (prefix) => {
+            return ['\nUse for example like "<repeat:3,very> big" to get "very very very big", or "<repeat:1-3,very>" to get randomly between 1 to 3 "very"s, or <repeat:3,<random:cat,dog>>" to get "cat" or "dog" 3 times in a row eg "cat dog cat".'];
+        });
+        this.registerPrefix('preset', 'Forcibly apply a preset onto the current generation (useful eg inside wildcards or other automatic inclusions - normally use the Presets UI tab)', (prefix) => {
+            let prefixLow = prefix.toLowerCase();
+            return allPresets.map(p => p.title).filter(p => p.toLowerCase().includes(prefixLow));
+        });
+        this.registerPrefix('embed', 'Use a pretrained CLIP TI Embedding', (prefix) => {
+            let prefixLow = prefix.toLowerCase();
+            return coreModelMap['Embedding'].map(cleanModelName).filter(e => e.toLowerCase().includes(prefixLow));
+        });
+        this.registerPrefix('lora', 'Forcibly apply a pretrained LoRA model (useful eg inside wildcards or other automatic inclusions - normally use the LoRAs UI tab)', (prefix) => {
+            let prefixLow = prefix.toLowerCase();
+            return coreModelMap['LoRA'].map(cleanModelName).filter(m => m.toLowerCase().includes(prefixLow));
+        });
+        this.registerPrefix('region', 'Apply a different prompt to a sub-region within the image', (prefix) => {
+            return ['\nx,y,width,height eg "0.25,0.25,0.5,0.5" or x,y,width,height,strength eg "0,0,1,1,0.5" where strength is how strongly to apply the prompt to the region (vs global prompt). Can do "region:background" for background-only region.'];
+        });
+        this.registerPrefix('object', 'Select a sub-region inside the image and inpaint over it with a different prompt', (prefix) => {
+            return ['\nx,y,width,height eg "0.25,0.25,0.5,0.5" or x,y,width,height,strength,strength2 eg "0,0,1,1,0.5,0.4" where strength is how strongly to apply the prompt to the region (vs global prompt) on the general pass, and strength2 is how strongly to inpaint (ie InitImageCreativity).'];
+        });
+        this.registerPrefix('segment', 'Automatically segment an area by CLIP matcher and inpaint it (optionally with a unique prompt)', (prefix) => {
+            return ['\nSpecify before the ">" some text to match against in the image, like "<segment:face>". Can also do "<segment:text,creativity,threshold>" eg "face,0.6,0.5" where creativity is InitImageCreativity, and threshold is mask matching threshold for CLIP-Seg.'];
+        });
+        this.registerPrefix('clear', 'Automatically clear part of the image to transparent (by CLIP segmentation matching) (iffy quality, prefer the Remove Background parameter over this)', (prefix) => {
+            return ['\nSpecify before the ">" some text to match against in the image, like "<segment:background>"'];
+        });
+        this.registerPrefix('break', 'Split this prompt across multiple lines of conditioning to the model (helps separate concepts for long prompts).', (prefix) => {
+            return [];
+        }, true);
+        this.lastWord = null;
+        this.lastResults = null;
+    }
+
+    enableFor(box) {
+        box.addEventListener('keydown', e => this.onKeyDown(e), true);
+        box.addEventListener('input', () => this.onInput(box), true);
+    }
+
+    registerPrefix(name, description, completer, selfStanding = false) {
+        this.prefixes[name] = { name, description, completer, selfStanding };
+    }
+
+    getPromptBeforeCursor(box) {
+        return box.value.substring(0, box.selectionStart);
+    }
+
+    findLastWordIndex(text) {
+        let index = -1;
+        for (let cut of [' ', ',', '.', '\n']) {
+            let i = text.lastIndexOf(cut);
+            if (i > index) {
+                index = i;
+            }
+        }
+        return index + 1;
+    }
+
+    getPossibleList(box) {
+        let prompt = this.getPromptBeforeCursor(box);
+        let word = prompt.substring(this.findLastWordIndex(prompt));
+        let baseList = [];
+        if (word.length > 1 && autoCompletionsList) {
+            let completionSet;
+            if (this.lastWord && word.startsWith(this.lastWord)) {
+                completionSet = this.lastResults;
+            }
+            else {
+                completionSet = autoCompletionsOptimize ? autoCompletionsList[word[0]] : autoCompletionsList['all'];
+            }
+            let wordLow = word.toLowerCase();
+            let rawMatchSet = [];
+            if (completionSet) {
+                let startWithList = [];
+                let containList = [];
+                for (let i = 0; i < completionSet.length; i++) {
+                    let entry = completionSet[i];
+                    if (entry.low.includes(wordLow)) {
+                        if (entry.low.startsWith(wordLow)) {
+                            startWithList.push(entry);
+                        }
+                        else {
+                            containList.push(entry);
+                        }
+                        rawMatchSet.push(entry);
+                    }
+                }
+                startWithList.sort((a, b) => a.low.length - b.low.length || a.low.localeCompare(b.low));
+                containList.sort((a, b) => a.low.length - b.low.length || a.low.localeCompare(b.low));
+                baseList = startWithList.concat(containList).map(w => `<raw>${w.raw}`);
+                if (baseList.length > 50) {
+                    baseList = baseList.slice(0, 50);
+                }
+            }
+            this.lastWord = word;
+            this.lastResults = rawMatchSet;
+        }
+        let lastBrace = prompt.lastIndexOf('<');
+        if (lastBrace == -1) {
+            return baseList;
+        }
+        let lastClose = prompt.lastIndexOf('>');
+        if (lastClose > lastBrace) {
+            return baseList;
+        }
+        let content = prompt.substring(lastBrace + 1);
+        let colon = content.indexOf(':');
+        if (colon == -1) {
+            content = content.toLowerCase();
+            return Object.keys(this.prefixes).filter(p => p.toLowerCase().startsWith(content)).map(p => [p, this.prefixes[p].description]);
+        }
+        let prefix = content.substring(0, colon);
+        let suffix = content.substring(colon + 1);
+        if (!(prefix in this.prefixes)) {
+            return [];
+        }
+        return this.prefixes[prefix].completer(suffix).map(p => p.startsWith('\n') ? p : `<${prefix}:${p}>`);
+    }
+
+    onKeyDown(e) {
+        // block pageup/down because chrome is silly
+        if (e.keyCode == 33 || e.keyCode == 34) {
+            e.preventDefault();
+        }
+        if (this.popover) {
+            this.popover.onKeyDown(e);
+        }
+    }
+
+    onInput(box) {
+        if (this.popover) {
+            this.popover.remove();
+            this.popover = null;
+        }
+        let possible = this.getPossibleList(box);
+        if (possible.length == 0) {
+            return;
+        }
+        let buttons = [];
+        let prompt = this.getPromptBeforeCursor(box);
+        let lastBrace = prompt.lastIndexOf('<');
+        let wordIndex = this.findLastWordIndex(prompt);
+        for (let val of possible) {
+            let name = val;
+            let desc = '';
+            let apply = name;
+            let isClickable = true;
+            let index = lastBrace;
+            let className = null;
+            if (typeof val == 'object') {
+                [name, desc] = val;
+                if (this.prefixes[name].selfStanding) {
+                    apply = `<${name}>`;
+                }
+                else {
+                    apply = `<${name}:`;
+                }
+            }
+            else if (val.startsWith(`<raw>`)) {
+                name = val.substring(`<raw>`.length);
+                desc = '';
+                let split = name.split(',');
+                name = split[0];
+                if (split.length > 1) {
+                    className = `tag-text tag-type-${split[1]}`;
+                }
+                apply = name;
+                index = wordIndex;
+            }
+            else if (val.startsWith('\n')) {
+                isClickable = false;
+                name = '';
+                desc = val.substring(1);
+            }
+            let button = { key: desc.length == 0 ? name: `${name} - ${desc}`, className: className };
+            if (isClickable) {
+                button.action = () => {
+                    let areaPre = prompt.substring(0, index);
+                    let areaPost = box.value.substring(box.selectionStart);
+                    box.value = areaPre + apply + areaPost;
+                    box.selectionStart = areaPre.length + apply.length;
+                    box.selectionEnd = areaPre.length + apply.length;
+                    box.focus();
+                    box.dispatchEvent(new Event('input'));
+                };
+            }
+            buttons.push(button);
+        }
+        let rect = box.getBoundingClientRect();
+        this.popover = new AdvancedPopover('prompt_suggest', buttons, false, rect.x, rect.y + box.offsetHeight + 6, box.parentElement, null, box.offsetHeight + 6, 250);
+    }
+}
+
+let promptTabComplete = new PromptTabCompleteClass();

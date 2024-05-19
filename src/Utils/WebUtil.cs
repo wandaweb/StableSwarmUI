@@ -11,8 +11,8 @@ public static class WebUtil
         return new HtmlString($"""
 <div class="toast {(show ? "show" : "hide")}" role="alert" aria-live="assertive" aria-atomic="true" id="{box_id}">
     <div class="toast-header">
-    <strong class="me-auto">{header}</strong>
-    <small>{small_side}</small>
+    <strong class="me-auto translate">{header}</strong>
+    <small class="translate">{small_side}</small>
     <button type="button" class="btn-close ms-2 mb-1" data-bs-dismiss="toast" aria-label="Close">
         <span aria-hidden="true"></span>
     </button>
@@ -26,11 +26,12 @@ public static class WebUtil
 
     public static HtmlString ModalHeader(string id, string title)
     {
+        string translate = title.Contains('<') ? "" : " translate";
         return new($"""
             <div class="modal" tabindex="-1" role="dialog" id="{id}">
                 <div class="modal-dialog" role="document">
                     <div class="modal-content">
-                        <div class="modal-header"><h5 class="modal-title">{title}</h5></div>
+                        <div class="modal-header"><h5 class="modal-title{translate}">{title}</h5></div>
             """);
     }
 
@@ -57,27 +58,49 @@ public static class WebUtil
             return new("Unknown GPU.");
         }
         NvidiaUtil.NvidiaInfo bestGpu = nv.OrderByDescending(x => x.TotalMemory.InBytes).First();
-        string basic = $"GPU {bestGpu.ID}: <b>{bestGpu.GPUName}</b>, <b>{bestGpu.TotalMemory}</b> VRAM";
+        string basic = "";
+        foreach (NvidiaUtil.NvidiaInfo info in nv)
+        {
+            basic += $"{(info == bestGpu ? "* " : "")}GPU {info.ID}: <b>{info.GPUName}</b>, <b>{info.TotalMemory}</b> VRAM\n<br>";
+        }
         if (nv.Length > 1)
         {
-            basic += $" ({nv.Length} total GPUs)";
+            basic += $"({nv.Length} total GPUs) ";
         }
         if (bestGpu.TotalMemory.GiB > 15)
         {
-            return new($"{basic} - able to run locally for almost anything.");
+            return new($"{basic}able to run locally for almost anything.");
         }
         if (bestGpu.TotalMemory.GiB > 11)
         {
-            return new($"{basic} - sufficient to run most usages locally.");
+            return new($"{basic}sufficient to run most usages locally.");
         }
         if (bestGpu.TotalMemory.GiB > 7)
         {
-            return new($"{basic} - sufficient to run basic usage locally. May be limited on large generations.");
+            return new($"{basic}sufficient to run basic usage locally. May be limited on large generations.");
         }
         if (bestGpu.TotalMemory.GiB > 3)
         {
-            return new($"{basic} - limited, may need to configure settings for LowVRAM usage to work reliably.");
+            return new($"{basic}limited, may need to configure settings for LowVRAM usage to work reliably.");
         }
-        return new($"{basic} - insufficient, may work with LowVRAM or CPU mode, but otherwise will need remote cloud process.");
+        return new($"{basic}insufficient, may work with LowVRAM or CPU mode, but otherwise will need remote cloud process.");
+    }
+
+    /// <summary>Returns true if the user most likely has an AMD GPU.</summary>
+    public static bool ProbablyHasAMDGpu()
+    {
+        NvidiaUtil.NvidiaInfo[] nv = NvidiaUtil.QueryNvidia();
+        if (nv is not null && nv.Length > 0)
+        {
+            Logs.Verbose($"Probably not AMD due to Nvidia GPU");
+            return false;
+        }
+        string mpsVar = Environment.GetEnvironmentVariable("PYTORCH_ENABLE_MPS_FALLBACK");
+        if (!string.IsNullOrWhiteSpace(mpsVar)) // Mac
+        {
+            Logs.Verbose($"Probably not AMD due to PYTORCH_ENABLE_MPS_FALLBACK={mpsVar}, indicating a Mac");
+            return false;
+        }
+        return true;
     }
 }

@@ -45,7 +45,7 @@ public partial class CliplikeTokenizer
         Tokens = StringConversionHelper.UTF8Encoding.GetString(data).Split('\n', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 0; i < DataMap.Length; i++)
         {
-            DataMap[i] = new();
+            DataMap[i] = [];
         }
         for (int i = 0; i < Tokens.Length; i++)
         {
@@ -62,7 +62,7 @@ public partial class CliplikeTokenizer
         }
         for (int i = 0; i < DataMap.Length; i++)
         {
-            DataMap[i] = DataMap[i].OrderByDescending(t => t.Piece.Length).ToList();
+            DataMap[i] = [.. DataMap[i].OrderByDescending(t => t.Piece.Length)];
         }
     }
 
@@ -83,7 +83,7 @@ public partial class CliplikeTokenizer
             }
             if (word == token.Piece)
             {
-                return new int[1] { token.ID };
+                return [token.ID];
             }
             if (token.Piece == word[0..token.Piece.Length])
             {
@@ -99,7 +99,7 @@ public partial class CliplikeTokenizer
         if (best is null)
         {
             Logs.Debug($"[CliplikeTokenizer] Error: Cannot encode word '{word}', will emit empty");
-            return Array.Empty<int>();
+            return [];
         }
         if (Cache is not null)
         {
@@ -120,9 +120,13 @@ public partial class CliplikeTokenizer
     public record struct Token(int ID, float Weight);
 
     /// <summary>Encodes a given chunk of text, and returns the raw encoded token set.</summary>
-    public Token[] Encode(string text, float weight = 1)
+    public Token[] Encode(string text, float weight = 1, bool fixParens = false)
     {
-        List<Token> output = new();
+        if (fixParens)
+        {
+            text = text.Replace("\\(", "(").Replace("\\)", ")");
+        }
+        List<Token> output = [];
         foreach (string word in Splitter.Matches(text.ToLowerInvariant()).Select(m => m.Value))
         {
             if (!string.IsNullOrWhiteSpace(word))
@@ -133,7 +137,7 @@ public partial class CliplikeTokenizer
                 }
             }
         }
-        return output.ToArray();
+        return [.. output];
     }
 
     /// <summary>Encodes a given chunk of text (with parenthetical weight parsing), and returns the raw encoded token set.
@@ -141,14 +145,14 @@ public partial class CliplikeTokenizer
     public Token[] EncodeWithWeighting(string text, float weight = 1)
     {
         int depth = 0;
-        char[] data = text.ToArray();
+        char[] data = [.. text];
         int start = 0;
         int parenStart = 0;
-        List<Token> output = new();
+        List<Token> output = [];
         for (int i = 0; i < data.Length; i++)
         {
             char c = data[i];
-            if (c == '(')
+            if (c == '(' && (i == 0 || data[i - 1] != '\\'))
             {
                 depth++;
                 if (depth == 1)
@@ -156,7 +160,7 @@ public partial class CliplikeTokenizer
                     parenStart = i;
                 }
             }
-            else if (c == ')' && depth > 0)
+            else if (c == ')' && depth > 0 && (i == 0 || data[i - 1] != '\\'))
             {
                 depth--;
                 if (depth == 0)
@@ -164,7 +168,7 @@ public partial class CliplikeTokenizer
                     string prefix = text[start..parenStart];
                     if (!string.IsNullOrWhiteSpace(prefix))
                     {
-                        output.AddRange(Encode(prefix, weight));
+                        output.AddRange(Encode(prefix, weight, true));
                     }
                     start = parenStart;
                     string paren = text[(start + 1)..i];
@@ -187,8 +191,8 @@ public partial class CliplikeTokenizer
         }
         if (start < text.Length)
         {
-            output.AddRange(Encode(text[start..], weight));
+            output.AddRange(Encode(text[start..], weight, true));
         }
-        return output.ToArray();
+        return [.. output];
     }
 }

@@ -6,6 +6,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Primitives;
+using StableSwarmUI.Accounts;
 using StableSwarmUI.Text2Image;
 using StableSwarmUI.Utils;
 using StableSwarmUI.WebAPI;
@@ -43,7 +45,7 @@ public class WebServer
     public static LogLevel LogLevel;
 
     /// <summary>Extra file content added by extensions.</summary>
-    public Dictionary<string, string> ExtensionSharedFiles = new();
+    public Dictionary<string, string> ExtensionSharedFiles = [];
 
     /// <summary>Extra content for the page header. Automatically set based on extensions.</summary>
     public static HtmlString PageHeaderExtra = new("");
@@ -58,14 +60,14 @@ public class WebServer
     public static HtmlString T2ITabBody = new("");
 
     /// <summary>Set of registered Theme IDs.</summary>
-    public Dictionary<string, ThemeData> RegisteredThemes = new();
+    public Dictionary<string, ThemeData> RegisteredThemes = [];
 
     /// <summary>Data about a theme.</summary>
     /// <param name="ID">The registered theme ID.</param>
     /// <param name="Name">The clear name to display to users.</param>
-    /// <param name="Path">The web request path for the theme.</param>
+    /// <param name="CSSPaths">The web request path for CSS files for this theme.</param>
     /// <param name="IsDark">True if the theme is dark, false if light.</param>
-    public record class ThemeData(string ID, string Name, string Path, bool IsDark) { }
+    public record class ThemeData(string ID, string Name, string[] CSSPaths, bool IsDark) { }
 
     /// <summary>Register a theme.</summary>
     public void RegisterTheme(ThemeData theme)
@@ -76,16 +78,19 @@ public class WebServer
     /// <summary>Register a theme from an extension.</summary>
     public void RegisterTheme(string id, string name, string extFile, Extension extension, bool isDark)
     {
-        RegisterTheme(new(id, name, $"/ExtensionFile/{extension.ExtensionName}/{extFile}", isDark));
+        RegisterTheme(new(id, name, [$"/ExtensionFile/{extension.ExtensionName}/{extFile}"], isDark));
     }
 
     /// <summary>Initial prep, called by <see cref="Program"/>, generally should not be touched externally.</summary>
     public void PreInit()
     {
         RegisteredThemes.Clear();
-        RegisterTheme(new("dark_dreams", "Dark Dreams", "/css/themes/dark_dreams.css", true));
-        RegisterTheme(new("gravity_blue", "Gravity Blue", "/css/themes/gravity_blue.css", true));
-        RegisterTheme(new("eyesear_white", "Eyesear White", "/css/themes/eyesear_white.css", false));
+        RegisterTheme(new("modern_dark", "Modern Dark", ["/css/themes/modern.css", "/css/themes/modern_dark.css"], true));
+        RegisterTheme(new("modern_light", "Modern Light", ["/css/themes/modern.css", "/css/themes/modern_light.css"], false));
+        RegisterTheme(new("dark_dreams", "Dark Dreams", ["/css/themes/dark_dreams.css"], true));
+        RegisterTheme(new("gravity_blue", "Gravity Blue", ["/css/themes/gravity_blue.css"], true));
+        RegisterTheme(new("cyber_swarm", "Cyber Swarm", ["/css/themes/cyber_swarm.css"], true));
+        RegisterTheme(new("eyesear_white", "Eyesear White", ["/css/themes/eyesear_white.css"], false));
     }
 
     /// <summary>Main prep, called by <see cref="Program"/>, generally should not be touched externally.</summary>
@@ -119,6 +124,17 @@ public class WebServer
         timer.Check("[Web] StartStop handler");
         WebApp.UseStaticFiles(new StaticFileOptions());
         timer.Check("[Web] static files");
+        WebApp.Use(async (context, next) =>
+        {
+            string referrer = (context.Request.Headers.Referer.FirstOrDefault() ?? "").After("://").After('/').ToLowerFast();
+            string path = context.Request.Path.Value.ToLowerFast();
+            if (referrer.StartsWith("comfybackenddirect/") && !path.StartsWith("/comfybackenddirect/"))
+            {
+                context.Request.Path = $"/ComfyBackendDirect{context.Request.Path}";
+                Logs.Debug($"ComfyBackendDirect call was misrouted, rerouting to '{context.Request.Path}'");
+            }
+            await next();
+        });
         WebApp.UseRouting();
         WebApp.UseWebSockets(new WebSocketOptions() { KeepAliveInterval = TimeSpan.FromSeconds(30) });
         WebApp.MapRazorPages();
@@ -126,6 +142,7 @@ public class WebServer
         WebApp.MapGet("/", () => Results.Redirect("/Text2Image"));
         WebApp.Map("/API/{*Call}", API.HandleAsyncRequest);
         WebApp.MapGet("/Output/{*Path}", ViewOutput);
+        WebApp.MapGet("/View/{*Path}", ViewOutput);
         WebApp.MapGet("/ExtensionFile/{*f}", ViewExtensionScript);
         timer.Check("[Web] core maps");
         WebApp.Use(async (context, next) =>
@@ -133,11 +150,17 @@ public class WebServer
             await next();
             if (context.Response.StatusCode == 404)
             {
-                if (!context.Request.Path.Value.ToLowerFast().StartsWith("/error/"))
+                if (context.Response.HasStarted)
+                {
+                    return;
+                }
+                string path = context.Request.Path.Value.ToLowerFast();
+                if (!path.StartsWith("/error/"))
                 {
                     try
                     {
                         context.Response.Redirect("/Error/404");
+                        return;
                     }
                     catch (Exception)
                     {
@@ -176,7 +199,7 @@ public class WebServer
                     string simpleName = file.AfterLast('/').BeforeLast('.');
                     string id = T2IParamTypes.CleanTypeName(simpleName);
                     string content = File.ReadAllText(file);
-                    tabHeader.Append($"<li class=\"nav-item\" role=\"presentation\"><a class=\"nav-link\" id=\"maintab_{id}\" data-bs-toggle=\"tab\" href=\"#{id}\" aria-selected=\"false\" tabindex=\"-1\" role=\"tab\">{simpleName}</a></li>\n");
+                    tabHeader.Append($"<li class=\"nav-item\" role=\"presentation\"><a class=\"nav-link translate\" id=\"maintab_{id}\" data-bs-toggle=\"tab\" href=\"#{id}\" aria-selected=\"false\" tabindex=\"-1\" role=\"tab\">{simpleName}</a></li>\n");
                     tabFooter.Append($"<div class=\"tab-pane tab-pane-vw\" id=\"{id}\" role=\"tabpanel\">\n{content}\n</div>\n");
                 }
             }
@@ -195,10 +218,10 @@ public class WebServer
     }
 
     /// <summary>Test the validity of a user-given file path. Returns (path, consoleError, userError).</summary>
-    public (string, string, string) CheckOutputFilePath(string path, string userId)
+    public (string, string, string) CheckOutputFilePath(string path, string userId, bool isExact)
     {
         string root = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath);
-        if (Program.ServerSettings.Paths.AppendUserNameToOutputPath)
+        if (Program.ServerSettings.Paths.AppendUserNameToOutputPath && !isExact)
         {
             root = $"{root}/{userId}";
         }
@@ -208,7 +231,7 @@ public class WebServer
     /// <summary>Test the validity of a user-given file path. Returns (path, consoleError, userError).</summary>
     public static (string, string, string) CheckFilePath(string root, string path)
     {
-        path = path.Replace('\\', '/');
+        path = path.Replace('\\', '/').Replace("%20", " ");
         path = Utilities.FilePathForbidden.TrimToNonMatches(path);
         while (path.Contains(".."))
         {
@@ -252,27 +275,49 @@ public class WebServer
     /// <summary>Web route for viewing output images.</summary>
     public async Task ViewOutput(HttpContext context)
     {
-        string path = context.Request.Path.ToString().After("/Output/");
+        string path = context.Request.Path.ToString();
+        bool isExact = false;
+        if (path.StartsWith("/View/"))
+        {
+            path = path.After("/View/");
+            isExact = true;
+        }
+        else
+        {
+            path = path.After("/Output/");
+        }
         path = Uri.UnescapeDataString(path).Replace('\\', '/');
-        string userId = Program.Sessions.AdminUser.UserID; // TODO: From login cookie
-        (path, string consoleError, string userError) = CheckOutputFilePath(path, userId);
+        string userId;
+        if (context.Request.Headers.TryGetValue("X-SWARM-USER_ID", out StringValues user_id)) // TODO: Proper auth
+        {
+            userId = user_id[0];
+        }
+        else
+        {
+            userId = SessionHandler.LocalUserID; // TODO: disable this if non-local swarm instance
+        }
+        (path, string consoleError, string userError) = CheckOutputFilePath(path, userId, isExact);
         if (consoleError is not null)
         {
             Logs.Error(consoleError);
             await context.YieldJsonOutput(null, 400, Utilities.ErrorObj(userError, "bad_path"));
             return;
         }
-        byte[] data;
+        byte[] data = null;
         try
         {
-            data = await File.ReadAllBytesAsync(path);
+            if (context.Request.Query.TryGetValue("preview", out StringValues previewToken) && $"{previewToken}" == "true" && Program.Sessions.GetUser(userId).Settings.ImageHistoryUsePreviews)
+            {
+                data = ImageMetadataTracker.GetOrCreatePreviewFor(path);
+            }
+            data ??= await File.ReadAllBytesAsync(path);
         }
         catch (Exception ex)
         {
             if (ex is FileNotFoundException || ex is DirectoryNotFoundException || ex is PathTooLongException)
             {
                 Logs.Verbose($"File-not-found error reading output file '{path}': {ex}");
-                await context.YieldJsonOutput(null, 04, Utilities.ErrorObj("404, file not found.", "file_not_found"));
+                await context.YieldJsonOutput(null, 404, Utilities.ErrorObj("404, file not found.", "file_not_found"));
             }
             else
             {
@@ -283,7 +328,8 @@ public class WebServer
         }
         context.Response.ContentType = Utilities.GuessContentType(path);
         context.Response.StatusCode = 200;
-        await context.Response.Body.WriteAsync(data);
+        context.Response.ContentLength = data.Length;
+        await context.Response.Body.WriteAsync(data, Program.GlobalProgramCancel);
         await context.Response.CompleteAsync();
     }
 }

@@ -1,11 +1,15 @@
 
 class InstallerClass {
-    parts = ['license', 'themes', 'installed_for', 'backends', 'models', 'end'];
+    parts = ['license', 'skip', 'themes', 'installed_for', 'backends', 'models', 'end'];
     backButton = getRequiredElementById('installer_button_back');
     nextButton = getRequiredElementById('installer_button_next');
     bottomInfo = getRequiredElementById('bottom_info');
 
     constructor() {
+        let amdPart = document.getElementById('installer_section_amd');
+        if (amdPart) {
+            this.parts.splice(1, 0, 'amd');
+        }
         this.cur_part = 0;
         this.backButton.addEventListener('click', this.back.bind(this));
         this.nextButton.addEventListener('click', this.next.bind(this));
@@ -22,15 +26,29 @@ class InstallerClass {
         }
         getRequiredElementById('stability_api_key').addEventListener('input', this.check.bind(this));
         getRequiredElementById('installer_button_confirm').addEventListener('click', this.submit.bind(this));
-        getSession();
+        getSession(() => {
+            language = language || 'en';
+            loadAndApplyTranslations();
+        });
     }
 
     themeChanged() {
         let theme = getRadioSelectionInFieldset('theme_selection_field');
-        let path = `/css/themes/${theme}.css`;
-        let isDark = theme != 'eyesear_white';
-        getRequiredElementById('theme_sheet_header').href = path;
+        let css_paths = [`/css/themes/${theme}.css`];
+        let isDark = !['eyesear_white', 'modern_light'].includes(theme);
+        if (theme.startsWith('modern')) {
+            css_paths.unshift('/css/themes/modern.css');
+        }
+        let themeCss = document.head.querySelectorAll('.theme_sheet_header');
+        let oldPaths = Array.from(themeCss).map(x => x.href.split('?')[0]);
+        if (css_paths.every(x => oldPaths.some(o => o.endsWith(x)))) {
+            return;
+        }
+        let siteHeader = getRequiredElementById('sitecssheader');
         getRequiredElementById('bs_theme_header').href = isDark ? '/css/bootstrap.min.css' : '/css/bootstrap_light.min.css';
+        themeCss.forEach(x => x.remove());
+        let newTheme = css_paths.map(path => `<link class="theme_sheet_header" rel="stylesheet" href="${path}?${siteHeader.href.split('?')[1]}" />`).join('\n');
+        document.head.insertAdjacentHTML('beforeend', newTheme);
     }
 
     modelsToDownload() {
@@ -48,6 +66,13 @@ class InstallerClass {
     }
 
     next() {
+        if (this.parts[this.cur_part] == 'skip') {
+            let skip = getRadioSelectionInFieldset('install_path_selection_field');
+            if (skip == 'just_install') {
+                this.moveToPage(this.parts.length - 1);
+                return;
+            }
+        }
         this.moveToPage(this.cur_part + 1);
     }
 
@@ -59,6 +84,10 @@ class InstallerClass {
         switch (this.parts[this.cur_part]) {
             case 'license':
                 return true;
+            case 'amd':
+                return getRadioSelectionInFieldset('amd_selection_field') != null;
+            case 'skip':
+                return getRadioSelectionInFieldset('install_path_selection_field') != null;
             case 'themes':
                 return getRadioSelectionInFieldset('theme_selection_field') != null;
             case 'installed_for':
@@ -103,34 +132,54 @@ class InstallerClass {
     }
 
     getSubmittable() {
+        let amd_section = document.getElementById('amd_selection_field');
+        let install_amd = false;
+        if (amd_section) {
+            install_amd = getRadioSelectionInFieldset('amd_selection_field') == 'yes';
+        }
         let models = this.modelsToDownload();
         return {
             theme: getRadioSelectionInFieldset('theme_selection_field'),
             installed_for: getRadioSelectionInFieldset('installed_for_selection_field'),
             backend: getRadioSelectionInFieldset('backend_selection_field'),
             stability_api_key: getRequiredElementById('stability_api_key').value,
-            models: models.length == 0 ? 'none' : this.modelsToDownload().join(', ')
+            models: models.length == 0 ? 'none' : this.modelsToDownload().join(', '),
+            language: document.getElementById('installer_language').value,
+            install_amd: install_amd
         };
     }
 
     submit() {
         let output = getRequiredElementById('install_output');
         let progress = getRequiredElementById('install_progress_spot');
+        let bar = getRequiredElementById('install_progress_bar');
+        let stepBar = getRequiredElementById('install_progress_step_bar');
         output.innerText = 'Sending...\n';
         let data = this.getSubmittable();
         getRequiredElementById('installer_button_confirm').disabled = true;
+        let timeLastRestart = 0;
         makeWSRequest('InstallConfirmWS', data, (response) => {
             if (response.info) {
                 output.innerText += response.info + "\n";
             }
-            else if (response.progress) {
+            else if ('progress' in response) {
+                progress.style.display = 'block';
                 if (response.progress == 0) {
-                    progress.style.display = 'none';
+                    progress.innerText = `Step ${response.steps} / ${response.total_steps}`;
+                    bar.style.width = '0%';
+                    timeLastRestart = Date.now();
                 }
                 else {
-                    progress.style.display = 'block';
-                    progress.innerText = `Progress: ${fileSizeStringify(response.progress)}`;
+                    if (timeLastRestart == 0) {
+                        timeLastRestart = Date.now();
+                    }
+                    let perSecond = response.progress / (Date.now() - timeLastRestart) * 1000;
+                    let percent = response.total == 0 ? 0 : (Math.round(response.progress / response.total * 10000) / 100);
+                    progress.innerText = `Progress: ${fileSizeStringify(response.progress)} / ${fileSizeStringify(response.total)} (${percent}%) (Step ${response.steps} / ${response.total_steps}) ... ${fileSizeStringify(perSecond)}/s`;
+                    bar.style.width = `${percent}%`;
                 }
+                let stepPercent = Math.round(response.steps / response.total_steps * 10000) / 100;
+                stepBar.style.width = `${stepPercent}%`;
             }
             else if (response.success) {
                 window.location.href = '/Text2Image';

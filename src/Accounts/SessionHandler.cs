@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using LiteDB;
 using StableSwarmUI.Text2Image;
 using FreneticUtilities.FreneticToolkit;
+using FreneticUtilities.FreneticExtensions;
 
 namespace StableSwarmUI.Accounts;
 
@@ -16,44 +17,64 @@ public class SessionHandler
     /// <summary>Map of currently tracked sessions by ID.</summary>
     public ConcurrentDictionary<string, Session> Sessions = new();
 
+    /// <summary>Temporary map of current users. Do not use this directly, use <see cref="GetUser(string)"/>.</summary>
+    public ConcurrentDictionary<string, User> Users = new();
+
     /// <summary>ID to use for the local user when in single-user mode.</summary>
     public static string LocalUserID = "local";
 
-    /// <summary>Basic reusable admin user.</summary>
-    public User AdminUser;
-
+    /// <summary>Internal database.</summary>
     public ILiteDatabase Database;
 
+    /// <summary>Internal database (users).</summary>
     public ILiteCollection<User.DatabaseEntry> UserDatabase;
 
+    /// <summary>Internal database (presets).</summary>
     public ILiteCollection<T2IPreset> T2IPresets;
 
+    /// <summary>Generic user data store.</summary>
+    public ILiteCollection<GenericDataStore> GenericData;
+
+    /// <summary>Internal database access locker.</summary>
     public LockObject DBLock = new();
+
+    public User GenericSharedUser;
+
+    /// <summary>Helper for the database to store generic datablob.s</summary>
+    public class GenericDataStore
+    {
+        [BsonId]
+        public string ID { get; set; }
+
+        public string Data { get; set; }
+    }
 
     public SessionHandler()
     {
-        Database = new LiteDatabase("Data/Users.ldb");
+        Database = new LiteDatabase($"{Program.DataDir}/Users.ldb");
         UserDatabase = Database.GetCollection<User.DatabaseEntry>("users");
         T2IPresets = Database.GetCollection<T2IPreset>("t2i_presets");
-        User.DatabaseEntry adminUserData = UserDatabase.FindById(LocalUserID);
-        adminUserData ??= new() { ID = LocalUserID, RawSettings = "\n" };
-        AdminUser = new(this, adminUserData);
-        AdminUser.Restrictions.Admin = true;
+        GenericData = Database.GetCollection<GenericDataStore>("generic_data");
+        GenericSharedUser = GetUser("__shared");
     }
 
-    public Session CreateAdminSession(string source)
+    public Session CreateAdminSession(string source, string userId = null)
     {
         if (HasShutdown)
         {
             throw new InvalidOperationException("Session handler is shutting down.");
         }
-        Logs.Info($"Creating new admin session for {source}");
+        userId ??= LocalUserID;
+        User user = GetUser(userId);
+        user.Restrictions.Admin = true;
+        Logs.Info($"Creating new admin session '{userId}' for {source}");
         for (int i = 0; i < 1000; i++)
         {
             Session sess = new()
             {
                 ID = Utilities.SecureRandomHex(SessionIDLength),
-                User = AdminUser
+                OriginAddress = source,
+                User = user
             };
             if (Sessions.TryAdd(sess.ID, sess))
             {
@@ -62,6 +83,22 @@ public class SessionHandler
             }
         }
         throw new InvalidOperationException("Something is critically wrong in the session handler, cannot generate unique IDs!");
+    }
+
+    /// <summary>Gets or creates the user for the given ID.</summary>
+    public User GetUser(string userId)
+    {
+        userId = Utilities.StrictFilenameClean(userId).Replace("/", "");
+        if (userId.Length == 0)
+        {
+            userId = "_";
+        }
+        return Users.GetOrCreate(userId, () =>
+        {
+            User.DatabaseEntry userData = UserDatabase.FindById(userId);
+            userData ??= new() { ID = userId, RawSettings = "\n" };
+            return new(this, userData);
+        });
     }
 
     /// <summary>Tries to get the session for an id.</summary>

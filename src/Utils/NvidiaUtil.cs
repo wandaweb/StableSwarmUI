@@ -63,7 +63,7 @@ public static class NvidiaUtil
                 Process p = Process.Start(psi);
                 p.WaitForExit();
                 p.StandardOutput.ReadLine(); // skip header
-                List<NvidiaInfo> output = new();
+                List<NvidiaInfo> output = [];
                 while (true)
                 {
                     string data = p.StandardOutput.ReadLine();
@@ -81,10 +81,9 @@ public static class NvidiaUtil
                     long freeMemory = ParseMemory(parts[6]);
                     long usedMemory = ParseMemory(parts[7]);
                     NvidiaInfo info = new(output.Count, GPUName, driverVersion, temp, utilGPU, utilMemory, new(totalMemory), new(freeMemory), new(usedMemory));
-                    Logs.Verbose($"nvidia-smi: {data}: {info}");
                     output.Add(info);
                 }
-                Internal.LastResultCache = output.ToArray();
+                Internal.LastResultCache = [.. output];
                 Internal.LastQueryTime = Environment.TickCount64;
                 return Internal.LastResultCache;
             }

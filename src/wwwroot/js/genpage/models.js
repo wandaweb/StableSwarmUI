@@ -4,9 +4,117 @@ let cur_model = null;
 let curModelWidth = 0, curModelHeight = 0;
 let curModelArch = '';
 let curModelCompatClass = '';
+let curWildcardMenuWildcard = null;
 let curModelMenuModel = null;
 let curModelMenuBrowser = null;
 let loraWeightPref = {};
+let allWildcards = [];
+
+function test_wildcard_again() {
+    let card = curWildcardMenuWildcard;
+    if (card == null) {
+        console.log("Wildcard do test: no wildcard");
+        return;
+    }
+    testWildcard(card);
+}
+
+function testWildcard(card) {
+    if (card == null) {
+        return;
+    }
+    curWildcardMenuWildcard = card;
+    getRequiredElementById('test_wildcard_name').innerText = card.name;
+    let choice = Math.floor(Math.random() * card.options.length);
+    let val = card.options[choice];
+    getRequiredElementById('test_wildcard_result').value = val;
+    let button = getRequiredElementById('test_wildcard_again_button');
+    if (val.includes('<')) {
+        button.disabled = true;
+        genericRequest('TestPromptFill', {'prompt': val}, data => {
+            button.disabled = false;
+            getRequiredElementById('test_wildcard_result').value = data.result;
+            $('#test_wildcard_modal').modal('show');
+        });
+    }
+    else {
+        button.disabled = false;
+        $('#test_wildcard_modal').modal('show');
+    }
+}
+
+function close_test_wildcard() {
+    $('#test_wildcard_modal').modal('hide');
+}
+
+function create_new_wildcard_button() {
+    let card = {
+        name: '',
+        raw: ''
+    };
+    editWildcard(card);
+}
+
+function editWildcard(card) {
+    if (card == null) {
+        return;
+    }
+    curWildcardMenuWildcard = card;
+    let imageInput = getRequiredElementById('edit_wildcard_image');
+    imageInput.innerHTML = '';
+    let enableImage = getRequiredElementById('edit_wildcard_enable_image');
+    enableImage.checked = false;
+    enableImage.disabled = true;
+    let curImg = document.getElementById('current_image_img');
+    if (curImg) {
+        let newImg = curImg.cloneNode(true);
+        newImg.id = 'edit_wildcard_image_img';
+        newImg.style.maxWidth = '100%';
+        newImg.style.maxHeight = '';
+        newImg.removeAttribute('width');
+        newImg.removeAttribute('height');
+        imageInput.appendChild(newImg);
+        if (!card.image || card.image == 'imgs/model_placeholder.jpg') {
+            enableImage.checked = true;
+        }
+        enableImage.disabled = false;
+    }
+    getRequiredElementById('edit_wildcard_name').value = card.name;
+    getRequiredElementById('edit_wildcard_contents').value = card.raw;
+    $('#edit_wildcard_modal').modal('show');
+}
+
+function save_edit_wildcard() {
+    let card = curWildcardMenuWildcard;
+    if (card == null) {
+        console.log("Wildcard do save: no wildcard");
+        return;
+    }
+    let data = {
+        'card': getRequiredElementById('edit_wildcard_name').value,
+        'options': getRequiredElementById('edit_wildcard_contents').value.trim() + '\n',
+        'preview_image': ''
+    };
+    function complete() {
+        genericRequest('EditWildcard', data, data => {
+            wildcardsBrowser.browser.refresh();
+        });
+        $('#edit_wildcard_modal').modal('hide');
+    }
+    if (getRequiredElementById('edit_wildcard_enable_image').checked) {
+        imageToData(getRequiredElementById('edit_wildcard_image').getElementsByTagName('img')[0].src, (dataURL) => {
+            data['preview_image'] = dataURL;
+            complete();
+        });
+    }
+    else {
+        complete();
+    }
+}
+
+function close_edit_wildcard() {
+    $('#edit_wildcard_modal').modal('hide');
+}
 
 function editModel(model, browser) {
     if (model == null) {
@@ -24,6 +132,9 @@ function editModel(model, browser) {
         let newImg = curImg.cloneNode(true);
         newImg.id = 'edit_model_image_img';
         newImg.style.maxWidth = '100%';
+        newImg.style.maxHeight = '';
+        newImg.removeAttribute('width');
+        newImg.removeAttribute('height');
         imageInput.appendChild(newImg);
         if (!model.preview_image || model.preview_image == 'imgs/model_placeholder.jpg') {
             enableImage.checked = true;
@@ -36,6 +147,8 @@ function editModel(model, browser) {
     for (let val of ['description', 'author', 'usage_hint', 'date', 'license', 'trigger_phrase', 'tags']) {
         getRequiredElementById(`edit_model_${val}`).value = model[val] || '';
     }
+    getRequiredElementById('edit_model_is_negative').checked = model.is_negative_embedding || false;
+    getRequiredElementById('edit_model_is_negative_div').style.display = model.architecture && model.architecture.endsWith('/textual-inversion') ? 'block' : 'none';
     $('#edit_model_modal').modal('show');
 }
 
@@ -56,6 +169,7 @@ function save_edit_model() {
     for (let val of ['author', 'type', 'description', 'usage_hint', 'date', 'license', 'trigger_phrase', 'tags']) {
         data[val] = getRequiredElementById(`edit_model_${val}`).value;
     }
+    data['is_negative_embedding'] = (model.architecture || '').endsWith('/textual-inversion') ? getRequiredElementById('edit_model_is_negative').checked : false;
     data.subtype = curModelMenuBrowser.subType;
     function complete() {
         genericRequest('EditModelMetadata', data, data => {
@@ -64,19 +178,10 @@ function save_edit_model() {
         $('#edit_model_modal').modal('hide');
     }
     if (getRequiredElementById('edit_model_enable_image').checked) {
-        var image = new Image();
-        image.crossOrigin = 'Anonymous';
-        image.onload = () => {
-            let canvas = document.createElement('canvas');
-            let context = canvas.getContext('2d');
-            canvas.height = 256;
-            canvas.width = 256;
-            context.drawImage(image, 0, 0, 256, 256);
-            let dataURL = canvas.toDataURL('image/jpeg');
+        imageToData(getRequiredElementById('edit_model_image').getElementsByTagName('img')[0].src, (dataURL) => {
             data['preview_image'] = dataURL;
             complete();
-        };
-        image.src = getRequiredElementById('edit_model_image').getElementsByTagName('img')[0].src;
+        });
     }
     else {
         complete();
@@ -109,6 +214,10 @@ function isModelArchCorrect(model) {
     return true;
 }
 
+function cleanModelName(name) {
+    return name.endsWith('.safetensors') ? name.substring(0, name.length - '.safetensors'.length) : name;
+}
+
 function sortModelName(a, b) {
     let aCorrect = isModelArchCorrect(a);
     let bCorrect = isModelArchCorrect(b);
@@ -130,10 +239,11 @@ function sortModelName(a, b) {
 }
 
 class ModelBrowserWrapper {
-    constructor(subType, container, id, selectOne) {
+    constructor(subType, container, id, selectOne, extraHeader = '') {
         this.subType = subType;
         this.selectOne = selectOne;
-        this.browser = new GenPageBrowserClass(container, this.listModelFolderAndFiles.bind(this), id, 'Cards', this.describeModel.bind(this), this.selectModel.bind(this));
+        let format = subType == 'Wildcards' ? 'Small Cards' : 'Cards';
+        this.browser = new GenPageBrowserClass(container, this.listModelFolderAndFiles.bind(this), id, format, this.describeModel.bind(this), this.selectModel.bind(this), extraHeader);
     }
 
     listModelFolderAndFiles(path, isRefresh, callback, depth) {
@@ -141,6 +251,22 @@ class ModelBrowserWrapper {
         genericRequest('ListModels', {'path': path, 'depth': depth, 'subtype': this.subType}, data => {
             let files = data.files.sort(sortModelName).map(f => { return { 'name': `${prefix}${f.name}`, 'data': f }; });
             if (this.subType == 'VAE') {
+                let autoFile = {
+                    'name': `Automatic`,
+                    'data': {
+                        'name': 'Automatic',
+                        'title': 'Automatic',
+                        'author': '(Internal)',
+                        'architecture': 'VAE',
+                        'class': 'VAE',
+                        'description': 'Use the VAE sepcified in your User Settings, or use the VAE built-in to your Stable Diffusion model',
+                        'preview_image': '/imgs/automatic.jpg',
+                        'is_safetensors': true,
+                        'local': true,
+                        standard_width: 0,
+                        standard_height: 0
+                    }
+                };
                 let noneFile = {
                     'name': `None`,
                     'data': {
@@ -157,13 +283,14 @@ class ModelBrowserWrapper {
                         standard_height: 0
                     }
                 };
-                files = [noneFile].concat(files);
+                files = [autoFile, noneFile].concat(files);
             }
             callback(data.folders.sort((a, b) => a.localeCompare(b)), files);
         });
     }
 
     describeModel(model) {
+        let promptBox = getRequiredElementById('alt_prompt_textbox');
         let description = '';
         let buttons = [];
         if (this.subType == 'Stable-Diffusion' && model.data.local) {
@@ -172,19 +299,61 @@ class ModelBrowserWrapper {
                 makeWSRequestT2I('SelectModelWS', {'model': model.data.name}, data => {
                     this.browser.navigate(lastModelDir);
                 });
+            };
+            let buttonRefiner = () => {
+                let refinerInput = document.getElementById('input_refinermodel');
+                if (!refinerInput) {
+                    return;
+                }
+                forceSetDropdownValue(refinerInput, model.data.name);
+                let toggler = document.getElementById('input_group_content_refiner_toggle');
+                if (toggler && !toggler.checked) {
+                    toggler.click();
+                    toggleGroupOpen(toggler, true);
+                }
             }
             buttons = [
-                { label: 'Load Now', onclick: buttonLoad }
+                { label: 'Load Now', onclick: buttonLoad },
+                { label: 'Set as Refiner', onclick: buttonRefiner }
+            ];
+        }
+        else if (this.subType == 'Embedding') {
+            buttons = [
+                { label: 'Add To Prompt', onclick: () => embedAddToPrompt(model.data, 'alt_prompt_textbox') },
+                { label: 'Add To Negative', onclick: () => embedAddToPrompt(model.data, 'alt_negativeprompt_textbox') },
+                { label: 'Remove All Usages', onclick: () => { embedClearFromPrompt(model.data, 'alt_prompt_textbox'); embedClearFromPrompt(model.data, 'alt_negativeprompt_textbox'); } }
             ];
         }
         let name = cleanModelName(model.data.name);
+        if (this.subType == 'Wildcards') {
+            buttons = [
+                { label: 'Edit Wildcard', onclick: () => editWildcard(model.data) },
+                { label: 'Test Wildcard', onclick: () => testWildcard(model.data) },
+                { label: 'Delete Wildcard', onclick: () => {
+                    if (confirm("Are you sure want to delete that wildcard?")) {
+                        genericRequest('DeleteWildcard', { card: model.data.name }, data => {
+                            wildcardsBrowser.browser.refresh();
+                        });
+                    }
+                } }
+            ];
+            let raw = model.data.raw;
+            if (raw.length > 512) {
+                raw = raw.substring(0, 512) + '...';
+            }
+            description = `<span class="wildcard_title">${escapeHtml(name)}</span><br>${escapeHtml(raw)}`;
+            let isSelected = promptBox.value.includes(`<wildcard:${model.data.name}>`);
+            let className = isSelected ? 'model-selected' : '';
+            let searchable = `${model.data.name}, ${description}`;
+            return { name, description, buttons, className, searchable, 'image': model.data.image };
+        }
         let isCorrect = isModelArchCorrect(model.data);
         let interject = '';
         if (!isCorrect && this.subType != 'Stable-Diffusion') {
             interject = `<b>(Incompatible with current model!)</b><br>`;
         }
         if (model.data.is_safetensors) {
-            let getLine = (label, val) => `<b>${label}:</b> ${val == null ? "(Unset)" : escapeHtml(val)}<br>`;
+            let getLine = (label, val) => `<b>${label}:</b> <span>${val == null ? "(Unset)" : safeHtmlOnly(val)}</span><br>`;
             let getOptLine = (label, val) => val ? getLine(label, val) : '';
             if (this.subType == 'LoRA' || this.subType == 'Stable-Diffusion') {
                 interject += `${getLine("Resolution", `${model.data.standard_width}x${model.data.standard_height}`)}`;
@@ -210,25 +379,25 @@ class ModelBrowserWrapper {
         }
         let isSelected;
         let selectorElem = document.getElementById(selector);
+        let clean = cleanModelName(model.data.name);
         if (!selectorElem) {
             isSelected = false;
         }
         else if (this.subType == 'VAE' && !document.getElementById('input_vae_toggle').checked) {
-            isSelected = model.data.name == 'None';
+            isSelected = model.data.name == 'Automatic';
         }
         else if (this.subType == 'LoRA') {
-            isSelected = [...selectorElem.selectedOptions].map(option => option.value).filter(value => value == model.data.name).length > 0;
+            isSelected = [...selectorElem.selectedOptions].map(option => option.value).filter(value => value == clean).length > 0;
         }
         else if (this.subType == 'Embedding') {
-            let promptBox = getRequiredElementById('alt_prompt_textbox');
-            isSelected = promptBox.value.includes(`<embed:${model.data.name}>`);
+            isSelected = promptBox.value.includes(`<embed:${clean}>`);
             let negativePrompt = document.getElementById('input_negativeprompt');
             if (negativePrompt) {
-                isSelected = isSelected || negativePrompt.value.includes(`<embed:${model.data.name}>`);
+                isSelected = isSelected || negativePrompt.value.includes(`<embed:${clean}>`);
             }
         }
         else {
-            isSelected = selectorElem.value == model.data.name;
+            isSelected = selectorElem.value == clean;
         }
         let className = isSelected ? 'model-selected' : (model.data.loaded ? 'model-loaded' : (!isCorrect ? 'model-unavailable' : ''));
         if (!model.data.local) {
@@ -240,21 +409,24 @@ class ModelBrowserWrapper {
 
     selectModel(model) {
         this.selectOne(model);
-        this.browser.rerender();
+        setTimeout(() => {
+            this.browser.rerender();
+        }, 50);
     }
 }
 
 let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
 let sdVAEBrowser = new ModelBrowserWrapper('VAE', 'vae_list', 'sdvaebrowser', (vae) => { directSetVae(vae.data); });
-let sdLoraBrowser = new ModelBrowserWrapper('LoRA', 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(lora.data.name); });
+let sdLoraBrowser = new ModelBrowserWrapper('LoRA', 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(cleanModelName(lora.data.name)); });
 let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', 'embedding_list', 'sdembedbrowser', (embed) => { selectEmbedding(embed.data); });
 let sdControlnetBrowser = new ModelBrowserWrapper('ControlNet', 'controlnet_list', 'sdcontrolnetbrowser', (controlnet) => { setControlNet(controlnet.data); });
+let wildcardsBrowser = new ModelBrowserWrapper('Wildcards', 'wildcard_list', 'wildcardsbrowser', (wildcard) => { selectWildcard(wildcard.data); }, `<button id="wildcards_list_create_new_button" class="refresh-button" onclick="create_new_wildcard_button()">Create New Wildcard</button>`);
 
-let allModelBrowsers = [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser];
+let allModelBrowsers = [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser, wildcardsBrowser];
 
-function selectEmbedding(model) {
+function selectWildcard(model) {
     let promptBox = getRequiredElementById('alt_prompt_textbox');
-    let chunk = `<embed:${model.name}>`;
+    let chunk = `<wildcard:${model.name}>`;
     if (promptBox.value.endsWith(chunk)) {
         promptBox.value = promptBox.value.substring(0, promptBox.value.length - chunk.length).trim();
     }
@@ -262,7 +434,33 @@ function selectEmbedding(model) {
         promptBox.value += ` ${chunk}`;
     }
     triggerChangeFor(promptBox);
+}
+
+function embedClearFromPrompt(model, element) {
+    let box = getRequiredElementById(element);
+    let chunk = `<embed:${cleanModelName(model.name)}>`;
+    box.value = box.value.replace(` ${chunk}`, '').replace(chunk, '').trim();
+    triggerChangeFor(box);
     sdEmbedBrowser.browser.rerender();
+}
+
+function embedAddToPrompt(model, element) {
+    let box = getRequiredElementById(element);
+    box.value += ` <embed:${cleanModelName(model.name)}>`;
+    triggerChangeFor(box);
+    sdEmbedBrowser.browser.rerender();
+}
+
+function selectEmbedding(model) {
+    let promptBox = getRequiredElementById(model.is_negative_embedding ? 'alt_negativeprompt_textbox' : 'alt_prompt_textbox');
+    let chunk = `<embed:${cleanModelName(model.name)}>`;
+    if (promptBox.value.endsWith(chunk)) {
+        promptBox.value = promptBox.value.substring(0, promptBox.value.length - chunk.length).trim();
+    }
+    else {
+        promptBox.value += ` ${chunk}`;
+    }
+    triggerChangeFor(promptBox);
 }
 
 let lastPromptForEmbedMonitor = {};
@@ -278,10 +476,14 @@ function monitorPromptChangeForEmbed(promptText, type) {
     lastPromptForEmbedMonitor[type] = promptText;
     let countNew = promptText.split(`<embed:`).length - 1;
     let countOld = last.split(`<embed:`).length - 1;
-    if (countNew == countOld) {
-        return;
+    if (countNew != countOld) {
+        sdEmbedBrowser.browser.rerender();
     }
-    sdEmbedBrowser.browser.rerender();
+    let countNewWc = promptText.split(`<wildcard:`).length - 1;
+    let countOldWc = last.split(`<wildcard:`).length - 1;
+    if (countNewWc != countOldWc) {
+        wildcardsBrowser.browser.rerender();
+    }
 }
 
 function setControlNet(model) {
@@ -289,7 +491,7 @@ function setControlNet(model) {
     if (!input) {
         return;
     }
-    forceSetDropdownValue(input, model.name);
+    forceSetDropdownValue(input, cleanModelName(model.name));
     let group = document.getElementById('input_group_content_controlnet_toggle');
     if (group) {
         group.checked = true;
@@ -343,13 +545,14 @@ function updateLoraList() {
     for (let lora of currentLoras) {
         let div = createDiv(null, 'preset-in-list');
         div.dataset.lora_name = lora;
-        div.innerText = lora;
+        div.innerText = cleanModelName(lora);
         let weightInput = document.createElement('input');
         weightInput.className = 'lora-weight-input';
         weightInput.type = 'number';
-        weightInput.min = -10;
-        weightInput.max = 10;
-        weightInput.step = 0.1;
+        let weightsParam = gen_param_types.find(p => p.id == 'loraweights');
+        weightInput.min = weightsParam ? weightsParam.min : -10;
+        weightInput.max = weightsParam ? weightsParam.max : 10;
+        weightInput.step = weightsParam ? weightsParam.step : 0.1;
         weightInput.value = loraWeightPref[lora] || 1;
         weightInput.addEventListener('change', () => {
             loraWeightPref[lora] = weightInput.value;
@@ -395,12 +598,12 @@ function toggleSelectLora(lora) {
 
 function directSetVae(vae) {
     let toggler = getRequiredElementById('input_vae_toggle');
-    if (!vae || vae.name == 'None') {
+    if (!vae) {
         toggler.checked = false;
         doToggleEnable('input_vae');
         return;
     }
-    forceSetDropdownValue('input_vae', vae.name);
+    forceSetDropdownValue('input_vae', cleanModelName(vae.name));
     toggler.checked = true;
     doToggleEnable('input_vae');
 }
@@ -410,9 +613,10 @@ function directSetModel(model) {
         return;
     }
     if (model.name) {
-        forceSetDropdownValue('input_model', model.name);
-        forceSetDropdownValue('current_model', model.name);
-        setCookie('selected_model', `${model.name},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class}`, 90);
+        let clean = cleanModelName(model.name);
+        forceSetDropdownValue('input_model', clean);
+        forceSetDropdownValue('current_model', clean);
+        setCookie('selected_model', `${clean},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class}`, 90);
         curModelWidth = model.standard_width;
         curModelHeight = model.standard_height;
         curModelArch = model.architecture;
@@ -427,6 +631,20 @@ function directSetModel(model) {
         curModelHeight = parseInt(height);
         curModelArch = arch;
         curModelCompatClass = compatClass;
+    }
+    getRequiredElementById('input_model').dispatchEvent(new Event('change'));
+    currentAutomaticVae = 'None';
+    if (curModelArch) {
+        let setting = null;
+        if (curModelArch.startsWith('stable-diffusion-xl-v1')) {
+            setting = document.getElementById('usersettings_vaes.defaultsdxlvae');
+        }
+        else if (curModelArch.startsWith('stable-diffusion-v1')) {
+            setting = document.getElementById('usersettings_vaes.defaultsdv1vae');
+        }
+        if (setting) {
+            currentAutomaticVae = setting.value;
+        }
     }
     let aspect = document.getElementById('input_aspectratio');
     if (aspect) {

@@ -1,7 +1,9 @@
 ﻿using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
+using StableSwarmUI.Core;
 using StableSwarmUI.Text2Image;
 using StableSwarmUI.Utils;
+using System.Collections.Generic;
 using System.IO;
 
 namespace StableSwarmUI.Accounts;
@@ -15,15 +17,30 @@ public class Session : IEquatable<Session>
     /// <summary>The relevant <see cref="User"/>.</summary>
     public User User;
 
+    /// <summary>Token to interrupt this session.</summary>
     public CancellationTokenSource SessInterrupt = new();
 
-    public List<GenClaim> Claims = new();
+    /// <summary>All current generation claims.</summary>
+    public ConcurrentDictionary<long, GenClaim> Claims = [];
 
     /// <summary>Statistics about the generations currently waiting in this session.</summary>
     public int WaitingGenerations = 0, LoadingModels = 0, WaitingBackends = 0, LiveGens = 0;
 
-    /// <summary>Locker for interacting with this session's statsdata.</summary>
-    public LockObject StatsLocker = new();
+    /// <summary><see cref="Environment.TickCount64"/> value for the last time this session triggered a generation, updated a setting, or other 'core action'.</summary>
+    public long LastUsedTime = Environment.TickCount64;
+
+    /// <summary>Originating remote IP address of the session.</summary>
+    public string OriginAddress;
+
+    /// <summary>Updates the <see cref="LastUsedTime"/> to the current time.</summary>
+    public void UpdateLastUsedTime()
+    {
+        Volatile.Write(ref LastUsedTime, Environment.TickCount64);
+        User.UpdateLastUsedTime();
+    }
+
+    /// <summary>Time since the last action was performed in this session.</summary>
+    public TimeSpan TimeSinceLastUsed => TimeSpan.FromMilliseconds(Environment.TickCount64 - Volatile.Read(ref LastUsedTime));
 
     /// <summary>Use "using <see cref="GenClaim"/> claim = session.Claim(image_count);" to track generation requests pending on this session.</summary>
     public GenClaim Claim(int gens = 0, int modelLoads = 0, int backendWaits = 0, int liveGens = 0)
@@ -34,6 +51,9 @@ public class Session : IEquatable<Session>
     /// <summary>Helper to claim an amount of generations and dispose it automatically cleanly.</summary>
     public class GenClaim : IDisposable
     {
+        /// <summary>Current number used to generate <see cref="ID"/>.</summary>
+        public static long ClaimID = 0;
+
         /// <summary>The number of generations tracked by this object.</summary>
         public int WaitingGenerations = 0, LoadingModels = 0, WaitingBackends = 0, LiveGens = 0;
 
@@ -46,6 +66,9 @@ public class Session : IEquatable<Session>
         /// <summary>Token source to interrupt just this claim's set.</summary>
         public CancellationTokenSource LocalClaimInterrupt = new();
 
+        /// <summary>Unique claim ID from an incremental number.</summary>
+        public long ID = Interlocked.Increment(ref ClaimID);
+
         /// <summary>If true, the running generations should stop immediately.</summary>
         public bool ShouldCancel => InterruptToken.IsCancellationRequested || LocalClaimInterrupt.IsCancellationRequested;
 
@@ -53,27 +76,21 @@ public class Session : IEquatable<Session>
         {
             Sess = session;
             InterruptToken = session.SessInterrupt.Token;
-            lock (Sess.StatsLocker)
-            {
-                Extend(gens, modelLoads, backendWaits, liveGens);
-                session.Claims.Add(this);
-            }
+            Extend(gens, modelLoads, backendWaits, liveGens);
+            session.Claims[ID] = this;
         }
 
         /// <summary>Increase the size of the claim.</summary>
         public void Extend(int gens = 0, int modelLoads = 0, int backendWaits = 0, int liveGens = 0)
         {
-            lock (Sess.StatsLocker)
-            {
-                WaitingGenerations += gens;
-                LoadingModels += modelLoads;
-                WaitingBackends += backendWaits;
-                LiveGens += liveGens;
-                Sess.WaitingGenerations += gens;
-                Sess.LoadingModels += modelLoads;
-                Sess.WaitingBackends += backendWaits;
-                Sess.LiveGens += liveGens;
-            }
+            Interlocked.Add(ref WaitingGenerations, gens);
+            Interlocked.Add(ref LoadingModels, modelLoads);
+            Interlocked.Add(ref WaitingBackends, backendWaits);
+            Interlocked.Add(ref LiveGens, liveGens);
+            Interlocked.Add(ref Sess.WaitingGenerations, gens);
+            Interlocked.Add(ref Sess.LoadingModels, modelLoads);
+            Interlocked.Add(ref Sess.WaitingBackends, backendWaits);
+            Interlocked.Add(ref Sess.LiveGens, liveGens);
         }
 
         /// <summary>Mark a subset of these as complete.</summary>
@@ -85,11 +102,8 @@ public class Session : IEquatable<Session>
         /// <summary>Internal dispose route, called by 'using' statements.</summary>
         public void Dispose()
         {
-            lock (Sess.StatsLocker)
-            {
-                Complete(WaitingGenerations, LoadingModels, WaitingBackends, LiveGens);
-                Sess.Claims.Remove(this);
-            }
+            Complete(WaitingGenerations, LoadingModels, WaitingBackends, LiveGens);
+            Sess.Claims.TryRemove(ID, out _);
             GC.SuppressFinalize(this);
         }
 
@@ -115,7 +129,8 @@ public class Session : IEquatable<Session>
             }
         }
         string metadata = user_input.GenRawMetadata();
-        image = image.ConvertTo(User.Settings.FileFormat.ImageFormat, User.Settings.FileFormat.SaveMetadata ? metadata : null, User.Settings.FileFormat.DPI);
+        string format = user_input.Get(T2IParamTypes.ImageFormat, User.Settings.FileFormat.ImageFormat);
+        image = image.ConvertTo(format, User.Settings.FileFormat.SaveMetadata ? metadata : null, User.Settings.FileFormat.DPI);
         return (image, metadata ?? "");
     }
 
@@ -135,7 +150,8 @@ public class Session : IEquatable<Session>
         }
         string rawImagePath = User.BuildImageOutputPath(user_input, batchIndex);
         string imagePath = rawImagePath.Replace("[number]", "1");
-        string extension = (User.Settings.FileFormat.ImageFormat == "PNG" ? "png" : "jpg");
+        string format = user_input.Get(T2IParamTypes.ImageFormat, User.Settings.FileFormat.ImageFormat);
+        string extension = format == "PNG" ? "png" : "jpg";
         if (image.Type != Image.ImageType.IMAGE)
         {
             Logs.Verbose($"Image is type {image.Type} and will save with extension '{image.Extension}'.");
@@ -160,8 +176,9 @@ public class Session : IEquatable<Session>
                     File.WriteAllBytes(fullPath.BeforeLast('.') + ".txt", metadata.EncodeUTF8());
                 }
             }
-            catch (Exception)
+            catch (Exception e1)
             {
+                string pathA = fullPath;
                 try
                 {
                     imagePath = "image_name_error/" + Utilities.SecureRandomHex(10);
@@ -171,12 +188,13 @@ public class Session : IEquatable<Session>
                 }
                 catch (Exception ex)
                 {
-                    Logs.Error($"Could not save user image: {ex.Message}");
+                    Logs.Error($"Could not save user image (to '{pathA}' nor to '{fullPath}': first error '{e1.Message}', second error '{ex.Message}'");
                     return ("ERROR", null);
                 }
             }
         }
-        return ($"Output/{imagePath}.{extension}", fullPath);
+        string prefix = Program.ServerSettings.Paths.AppendUserNameToOutputPath ? $"View/{User.UserID}/" : "Output/";
+        return ($"{prefix}{imagePath}.{extension}", fullPath);
     }
 
     /// <summary>Gets a hash code for this session, for C# equality comparsion.</summary>
