@@ -1,0 +1,43 @@
+stableswarmui:
+    base_path: C:\ai-apps\StableSwarmUI\Models
+    checkpoints: Stable-Diffusion
+    vae: |
+        VAE
+        VAE
+    loras: |
+        Lora
+        Lora
+        LyCORIS
+    upscale_models: |
+        ESRGAN
+        RealESRGAN
+        SwinIR
+        upscale-models
+        upscale_models
+    embeddings: |
+        Embeddings
+        embeddings
+    hypernetworks: hypernetworks
+    controlnet: |
+        controlnet
+        ControlNet
+    clip_vision: |
+        clip_vision
+        clip_vision
+    clip: |
+        clip
+    unet: |
+        unet
+    gligen: |
+        gligen
+    ipadapter: |
+        ipadapter
+    yolov8: |
+        yolov8
+    tensorrt: |
+        tensorrt
+    clipseg: |
+        clipseg
+    custom_nodes: |
+        C:\ai-apps\StableSwarmUI\src\BuiltinExtensions\ComfyUIBackend\DLNodes
+        C:\ai-apps\StableSwarmUI\src\BuiltinExtensions\ComfyUIBackend\ExtraNodes
